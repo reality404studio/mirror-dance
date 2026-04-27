@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mirror MR Test — Quest 3</title>
+<style>
+  * { margin: 0; box-sizing: border-box; }
+  body { background: #0d0d0d; color: white; font-family: sans-serif; height: 100vh; overflow: hidden; }
+
+  #status {
+    position: fixed; top: 0; left: 0; right: 0;
+    background: rgba(0,0,0,0.75); text-align: center;
+    padding: 10px 16px; font-size: 15px; z-index: 20;
+    letter-spacing: 0.02em;
+  }
+
+  #ui {
+    position: fixed; bottom: 36px; left: 0; right: 0;
+    display: flex; justify-content: center; gap: 14px; z-index: 20;
+  }
+
+  button {
+    padding: 16px 28px; font-size: 17px; font-weight: bold;
+    border: none; border-radius: 12px; cursor: pointer;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  }
+  #btnStart  { background: #4caf50; color: white; }
+  #btnToggle { background: #2196f3; color: white; display: none; }
+  #btnToggle.off { background: #ff9800; }
+
+  #hint {
+    position: fixed; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center; opacity: 0.35; pointer-events: none;
+  }
+  #hint .icon { font-size: 56px; }
+  #hint .desc { margin-top: 14px; font-size: 14px; line-height: 1.7; }
+</style>
+</head>
+<body>
+
+<div id="status">Quest 3 브라우저에서 열어주세요 (HTTPS 필요)</div>
+
+<div id="hint">
+  <div class="icon">🥽</div>
+  <div class="desc">Quest 3 브라우저에서<br>AR 시작 버튼을 누르세요</div>
+</div>
+
+<div id="ui">
+  <button id="btnStart">AR 시작</button>
+  <button id="btnToggle">시나리오 전환</button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script>
+// ────────────────────────────────────────────────────────────────
+//  CONSTANTS
+// ────────────────────────────────────────────────────────────────
+const MIRROR_DIST  = 1.5;   // 거울까지 거리 (m)
+const ORBIT_RADIUS = 0.18;  // 어깨 주위 큐브 궤도 반경 (m)
+const ORBIT_SPEED  = 0.022; // 회전 속도 (rad/frame)
+const CUBE_SIZE    = 0.20;  // 큐브 한 변 길이 (m)
+
+// 어깨 기준점: 헤드셋 위치에서의 오프셋
+const SH_X =  0.20; // 오른쪽으로
+const SH_Y = -0.20; // 눈 기준 아래
+const SH_Z = -0.05; // 약간 앞쪽
+
+// ────────────────────────────────────────────────────────────────
+//  THREE.JS SCENE
+// ────────────────────────────────────────────────────────────────
+const scene    = new THREE.Scene();
+const camera   = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.01, 50);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.xr.enabled = true;
+renderer.setClearColor(0x000000, 0); // 투명 배경 = passthrough
+document.body.appendChild(renderer.domElement);
+
+// 조명
+scene.add(new THREE.AmbientLight(0xffffff, 2.5));
+const dl = new THREE.DirectionalLight(0xffffff, 2.0);
+dl.position.set(1, 3, 1);
+scene.add(dl);
+
+// ── 빨간 큐브 ──────────────────────────────────────────────────
+const cubeGeo = new THREE.BoxGeometry(CUBE_SIZE, CUBE_SIZE, CUBE_SIZE);
+
+// 현실 큐브 (선명한 빨강)
+const realCube = new THREE.Mesh(
+  cubeGeo,
+  new THREE.MeshStandardMaterial({ color: 0xff1a1a, roughness: 0.25, metalness: 0.15 })
+);
+scene.add(realCube);
+
+// 거울 큐브 (조금 밝은 빨강 — 구분용)
+const mirrorCube = new THREE.Mesh(
+  cubeGeo,
+  new THREE.MeshStandardMaterial({ color: 0xff7777, roughness: 0.25, metalness: 0.15 })
+);
+scene.add(mirrorCube);
+
+// ── 바닥 가이드 (1.5m 기준선) ──────────────────────────────────
+const guideGroup = new THREE.Group();
+scene.add(guideGroup);
+guideGroup.visible = false;
+
+const barMat = new THREE.MeshBasicMaterial({ color: 0x00e5ff, side: THREE.DoubleSide });
+
+// 수평 바 (1.2m 폭)
+guideGroup.add(
+  Object.assign(new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.012, 0.04), barMat))
+);
+
+// 양쪽 세로 포스트
+[-0.58, 0.58].forEach(x => {
+  const post = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.28, 0.04), barMat);
+  post.position.set(x, 0.14, 0);
+  guideGroup.add(post);
+});
+
+// 가운데 화살표 방향 표시 (앞쪽 작은 삼각형)
+const arrowGeo = new THREE.ConeGeometry(0.06, 0.15, 4);
+arrowGeo.rotateX(Math.PI / 2);
+const arrow = new THREE.Mesh(arrowGeo, barMat);
+arrow.position.set(0, 0.006, -0.12); // 거울 방향쪽(앞쪽)
+guideGroup.add(arrow);
+
+// ────────────────────────────────────────────────────────────────
+//  STATE
+// ────────────────────────────────────────────────────────────────
+let spawnPos    = null; // { x, z } — 최초 스폰 위치
+let mirrorZ     = 0;    // 거울 평면의 Z 좌표
+let rotAngle    = 0;    // 궤도 / 자전 각도
+let scenario    = 1;    // 1: 현실+거울, 2: 거울만
+
+// ────────────────────────────────────────────────────────────────
+//  HELPER
+// ────────────────────────────────────────────────────────────────
+// 거울 평면(z = mirrorZ) 기준 z 반사
+function reflectZ(z) {
+  return 2 * mirrorZ - z;
+}
+
+// ────────────────────────────────────────────────────────────────
+//  UI
+// ────────────────────────────────────────────────────────────────
+const statusEl  = document.getElementById('status');
+const toggleBtn = document.getElementById('btnToggle');
+
+function setStatus(text) { statusEl.textContent = text; }
+
+toggleBtn.onclick = () => {
+  scenario = scenario === 1 ? 2 : 1;
+  if (scenario === 1) {
+    toggleBtn.textContent = '시나리오 전환';
+    toggleBtn.classList.remove('off');
+    setStatus('시나리오 1 — 현실 큐브 ON + 거울 큐브 | 전환 버튼으로 시나리오 2');
+  } else {
+    toggleBtn.textContent = '시나리오 1로 돌아가기';
+    toggleBtn.classList.add('off');
+    setStatus('시나리오 2 — 거울 큐브만 (현실에선 안 보임)');
+  }
+};
+
+// ────────────────────────────────────────────────────────────────
+//  AR SESSION
+// ────────────────────────────────────────────────────────────────
+document.getElementById('btnStart').onclick = async () => {
+  if (!navigator.xr) {
+    setStatus('⚠ WebXR 없음 — Quest 브라우저인가요?');
+    return;
+  }
+
+  const ok = await navigator.xr.isSessionSupported('immersive-ar').catch(() => false);
+  if (!ok) {
+    setStatus('⚠ immersive-ar 미지원 — Quest 브라우저 + 최신 OS 필요');
+    return;
+  }
+
+  let session;
+  try {
+    session = await navigator.xr.requestSession('immersive-ar', {
+      requiredFeatures: ['local-floor'],
+      optionalFeatures: ['dom-overlay'],
+      domOverlay: { root: document.getElementById('ui') }
+    });
+  } catch (e) {
+    setStatus('⚠ 세션 시작 실패: ' + e.message);
+    return;
+  }
+
+  await renderer.xr.setSession(session);
+  const refSpace = await session.requestReferenceSpace('local-floor');
+
+  document.getElementById('hint').style.display = 'none';
+  toggleBtn.style.display = 'inline-block';
+  setStatus('⏳ 스폰 위치 초기화 중...');
+
+  session.addEventListener('end', () => {
+    toggleBtn.style.display = 'none';
+    spawnPos = null;
+    guideGroup.visible = false;
+    setStatus('세션 종료됨');
+    renderer.setAnimationLoop(null);
+  });
+
+  // ── 메인 루프 ──────────────────────────────────────────────
+  renderer.setAnimationLoop((timestamp, frame) => {
+    if (!frame) { renderer.render(scene, camera); return; }
+
+    const pose = frame.getViewerPose(refSpace);
+    if (!pose) { renderer.render(scene, camera); return; }
+
+    const h = pose.transform.position; // 헤드 위치 (local-floor 기준, Y=0이 바닥)
+
+    // ── 최초 1회: 스폰 포지션 기록 ──────────────────────────
+    if (!spawnPos) {
+      spawnPos = { x: h.x, z: h.z };
+      mirrorZ  = h.z - MIRROR_DIST; // 사용자 앞 1.5m에 거울 평면
+
+      // 가이드 선 배치 (바닥, 거울 위치)
+      guideGroup.position.set(h.x, 0.005, mirrorZ);
+      guideGroup.visible = true;
+
+      setStatus(
+        `✓ 준비 완료 | 시안색 선 = 거울 위치(앞 ${MIRROR_DIST}m) | 아래 버튼으로 시나리오 전환`
+      );
+    }
+
+    // ── 어깨 기준점 (헤드 + 고정 오프셋) ───────────────────
+    const sx = h.x + SH_X;
+    const sy = h.y + SH_Y;
+    const sz = h.z + SH_Z;
+
+    // ── 궤도 계산 (어깨 주위 원 궤도) ──────────────────────
+    rotAngle += ORBIT_SPEED;
+    const cx = sx + Math.cos(rotAngle) * ORBIT_RADIUS;
+    const cy = sy + Math.sin(rotAngle * 0.6) * 0.05; // 살짝 위아래 움직임
+    const cz = sz + Math.sin(rotAngle) * ORBIT_RADIUS;
+
+    // ── 현실 큐브 ────────────────────────────────────────────
+    realCube.position.set(cx, cy, cz);
+    realCube.rotation.y =  rotAngle * 1.5;
+    realCube.rotation.x =  rotAngle * 0.5;
+    realCube.visible = (scenario === 1);
+
+    // ── 거울 큐브 (z축 반사) ────────────────────────────────
+    // 거울 평면 z = mirrorZ 기준으로 z좌표만 반사
+    // x, y는 그대로 → 수직 평면 거울의 수학적 반사
+    const mz = reflectZ(cz);
+    mirrorCube.position.set(cx, cy, mz);
+    mirrorCube.rotation.y = -rotAngle * 1.5; // 거울은 회전 방향 반전
+    mirrorCube.rotation.x = -rotAngle * 0.5;
+    mirrorCube.visible = true; // 항상 표시
+
+    renderer.render(scene, camera);
+  });
+};
+</script>
+</body>
+</html>
