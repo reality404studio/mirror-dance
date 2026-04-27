@@ -58,14 +58,8 @@
 //  CONSTANTS
 // ────────────────────────────────────────────────────────────────
 const MIRROR_DIST  = 1.5;   // 거울까지 거리 (m)
-const ORBIT_RADIUS = 0.18;  // 어깨 주위 큐브 궤도 반경 (m)
-const ORBIT_SPEED  = 0.022; // 회전 속도 (rad/frame)
 const CUBE_SIZE    = 0.20;  // 큐브 한 변 길이 (m)
-
-// 어깨 기준점: 헤드셋 위치에서의 오프셋
-const SH_X =  0.20; // 오른쪽으로
-const SH_Y = -0.20; // 눈 기준 아래
-const SH_Z = -0.05; // 약간 앞쪽
+const HEAD_ABOVE   = 0.30;  // 머리 위 높이 (m)
 
 // ────────────────────────────────────────────────────────────────
 //  THREE.JS SCENE
@@ -134,7 +128,6 @@ guideGroup.add(arrow);
 // ────────────────────────────────────────────────────────────────
 let spawnPos    = null; // { x, z } — 최초 스폰 위치
 let mirrorZ     = 0;    // 거울 평면의 Z 좌표
-let rotAngle    = 0;    // 궤도 / 자전 각도
 let scenario    = 1;    // 1: 현실+거울, 2: 거울만
 
 // ────────────────────────────────────────────────────────────────
@@ -231,30 +224,20 @@ document.getElementById('btnStart').onclick = async () => {
       );
     }
 
-    // ── 어깨 기준점 (헤드 + 고정 오프셋) ───────────────────
-    const sx = h.x + SH_X;
-    const sy = h.y + SH_Y;
-    const sz = h.z + SH_Z;
-
-    // ── 궤도 계산 (어깨 주위 원 궤도) ──────────────────────
-    rotAngle += ORBIT_SPEED;
-    const cx = sx + Math.cos(rotAngle) * ORBIT_RADIUS;
-    const cy = sy + Math.sin(rotAngle * 0.6) * 0.05; // 살짝 위아래 움직임
-    const cz = sz + Math.sin(rotAngle) * ORBIT_RADIUS;
+    // ── 큐브 위치: 머리 위 30cm, 실시간 추적 ─────────────────
+    const cx = h.x;
+    const cy = h.y + HEAD_ABOVE;
+    const cz = h.z;
 
     // ── 현실 큐브 ────────────────────────────────────────────
     realCube.position.set(cx, cy, cz);
-    realCube.rotation.y =  rotAngle * 1.5;
-    realCube.rotation.x =  rotAngle * 0.5;
     realCube.visible = (scenario === 1);
 
-    // ── 거울 큐브 (z축 반사) ────────────────────────────────
+    // ── 거울 큐브 (z축 반사) ─────────────────────────────────
     // 거울 평면 z = mirrorZ 기준으로 z좌표만 반사
     // x, y는 그대로 → 수직 평면 거울의 수학적 반사
     const mz = reflectZ(cz);
     mirrorCube.position.set(cx, cy, mz);
-    mirrorCube.rotation.y = -rotAngle * 1.5; // 거울은 회전 방향 반전
-    mirrorCube.rotation.x = -rotAngle * 0.5;
     mirrorCube.visible = true; // 항상 표시
 
     renderer.render(scene, camera);
