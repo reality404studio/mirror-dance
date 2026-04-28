@@ -161,6 +161,35 @@ const blueSphere = new THREE.Mesh(sphereGeo, blueMat);
 blueSphere.visible = false;
 scene.add(blueSphere);
 
+// ── 거울 통과 이펙트 ─────────────────────────────────────────
+// 1) 파문 링 3개: 거울 평면(XY)에서 바깥으로 퍼지는 동심원
+const RIPPLE_COUNT = 3;
+const rippleMeshes = [];
+const rippleMats  = [];
+for (let i = 0; i < RIPPLE_COUNT; i++) {
+  // TorusGeometry는 기본으로 XY 평면에 위치 — 거울 면(Z법선)에 딱 맞음
+  const rMat = new THREE.MeshBasicMaterial({
+    color: 0x4fc3f7, transparent: true, opacity: 0, side: THREE.DoubleSide
+  });
+  const rMesh = new THREE.Mesh(new THREE.TorusGeometry(1, 0.018, 8, 48), rMat);
+  rMesh.visible = false;
+  scene.add(rMesh);
+  rippleMeshes.push(rMesh);
+  rippleMats.push(rMat);
+}
+
+// 2) 플래시 버스트: 교차점에서 팽창 후 소멸하는 반투명 구
+const flashMat = new THREE.MeshBasicMaterial({
+  color: 0x90caf9, transparent: true, opacity: 0
+});
+const flashMesh = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 16), flashMat);
+flashMesh.visible = false;
+scene.add(flashMesh);
+
+// 3) 포인트 라이트 플래시 (주변을 파랗게 순간 비춤)
+const mirrorLight = new THREE.PointLight(0x4fc3f7, 0, 4);
+scene.add(mirrorLight);
+
 // 클리핑 플레인 — mirrorZ 확정 후 초기화
 // grayClipPlane : z > mirrorZ 를 제거 (거울 뒤쪽만 보임)
 // blueClipPlane : z < mirrorZ 를 제거 (거울 앞쪽만 보임)
@@ -190,6 +219,11 @@ let sphereAlpha     = 1;
 let sphereHoverTime = 0;
 let prevTimestamp   = 0;
 
+// 거울 이펙트 타이머
+// -1 = 비활성, 0 이상 = 경과 시간(초)
+let mirrorEffectTimer = -1;
+let mirrorTouched     = false; // 이번 소환에서 이미 트리거됐는지
+
 // ────────────────────────────────────────────────────────────────
 //  HELPER
 // ────────────────────────────────────────────────────────────────
@@ -204,14 +238,90 @@ function resetSphereVisuals() {
   blueMat.opacity    = 1;
 }
 
+// ── 거울 통과 이펙트 트리거 ───────────────────────────────────
+function triggerMirrorEffect(x, y, z) {
+  mirrorEffectTimer = 0;
+
+  // 링·플래시를 거울 교차 위치에 배치
+  rippleMeshes.forEach((m, i) => {
+    m.position.set(x, y, z);
+    m.scale.setScalar(0.01);
+    m.visible = true;
+    rippleMats[i].opacity = 0;
+  });
+
+  flashMesh.position.set(x, y, z);
+  flashMesh.scale.setScalar(0.01);
+  flashMesh.visible = true;
+  flashMat.opacity  = 0;
+
+  mirrorLight.position.set(x, y, z);
+  mirrorLight.intensity = 0;
+}
+
+// ── 거울 이펙트 매 프레임 업데이트 ──────────────────────────────
+function updateMirrorEffect(dt) {
+  if (mirrorEffectTimer < 0) return;
+  mirrorEffectTimer += dt;
+
+  const t = mirrorEffectTimer;
+  const RING_DELAY    = 0.13;  // 링 간 딜레이 (초)
+  const RING_DURATION = 0.65;  // 링 하나의 수명 (초)
+  const MAX_RADIUS    = 0.55;  // 최대 반지름 (m)
+  const TOTAL_TIME    = RING_DELAY * (RIPPLE_COUNT - 1) + RING_DURATION + 0.1;
+
+  // 파문 링
+  rippleMeshes.forEach((mesh, i) => {
+    const localT = t - i * RING_DELAY;
+    if (localT <= 0 || localT > RING_DURATION) {
+      mesh.visible = false;
+      return;
+    }
+    const p = localT / RING_DURATION;       // 0 → 1
+    mesh.scale.setScalar(p * MAX_RADIUS);   // 반지름 확대
+    rippleMats[i].opacity = (1 - p) * 0.75; // 서서히 투명
+    mesh.visible = true;
+  });
+
+  // 플래시 버스트 (첫 0.25초에 팽창 후 소멸)
+  const FLASH_DUR = 0.25;
+  if (t < FLASH_DUR) {
+    const fp = t / FLASH_DUR;
+    flashMesh.scale.setScalar(fp * 0.3);
+    flashMat.opacity = (1 - fp) * 0.9;
+    flashMesh.visible = true;
+  } else {
+    flashMesh.visible = false;
+  }
+
+  // 포인트 라이트 (첫 0.3초에 강도 0→4→0)
+  const LIGHT_DUR = 0.3;
+  if (t < LIGHT_DUR) {
+    const lp = t / LIGHT_DUR;
+    mirrorLight.intensity = Math.sin(lp * Math.PI) * 4.0;
+  } else {
+    mirrorLight.intensity = 0;
+  }
+
+  // 이펙트 종료
+  if (t > TOTAL_TIME) {
+    mirrorEffectTimer = -1;
+    rippleMeshes.forEach(m => { m.visible = false; });
+    flashMesh.visible     = false;
+    mirrorLight.intensity = 0;
+  }
+}
+
 // ── 구체 소환 시작 ────────────────────────────────────────────
 function startSphereAnimation() {
-  sphereZ         = mirrorZ - 1.0;  // 거울 뒤 1m 지점에서 시작
-  sphereY         = spawnEyeY;      // 스폰 시점 눈높이에 고정
-  spherePhase     = 'moving';
-  sphereAlpha     = 1;
-  grayMat.opacity = 1;
-  blueMat.opacity = 1;
+  sphereZ           = mirrorZ - 1.0;  // 거울 뒤 1m 지점에서 시작
+  sphereY           = spawnEyeY;      // 스폰 시점 눈높이에 고정
+  spherePhase       = 'moving';
+  sphereAlpha       = 1;
+  grayMat.opacity   = 1;
+  blueMat.opacity   = 1;
+  mirrorTouched     = false;          // 이펙트 트리거 리셋
+  mirrorEffectTimer = -1;
 }
 
 // ── 구체 업데이트 (매 프레임) ─────────────────────────────────
@@ -290,11 +400,20 @@ function updateSphere(timestamp, userZ) {
 
   } else {
     // 거울 통과 중: 두 구체를 거울 평면으로 잘라서 동시에 표시
-    grayMat.clippingPlanes = [grayClipPlane];   // z > mirrorZ 제거 → 뒤쪽 반만
-    blueMat.clippingPlanes = [blueClipPlane];   // z < mirrorZ 제거 → 앞쪽 반만
+    grayMat.clippingPlanes = [grayClipPlane];
+    blueMat.clippingPlanes = [blueClipPlane];
     graySphere.visible = true;
     blueSphere.visible = true;
+
+    // 첫 crossing 진입 시 이펙트 1회 트리거
+    if (!mirrorTouched) {
+      mirrorTouched = true;
+      triggerMirrorEffect(posX, posY, mirrorZ);
+    }
   }
+
+  // 이펙트 애니메이션 진행
+  updateMirrorEffect(dt);
 }
 
 // ────────────────────────────────────────────────────────────────
