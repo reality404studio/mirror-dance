@@ -392,6 +392,120 @@ const _ptrRing  = new THREE.Vector3();
 const _ptrPinky = new THREE.Vector3();
 
 // ────────────────────────────────────────────────────────────────
+//  궤적(Trail) 시스템 — 포인터 빛점이 지나간 자리에 잔상
+// ────────────────────────────────────────────────────────────────
+const TRAIL_LIFETIME     = 10.0;   // 점 유지 시간 (초)
+const TRAIL_ADD_INTERVAL = 0.033;  // 새 점 추가 간격 (초 ≈ 30fps)
+const TRAIL_MAX_PTS      = 400;
+
+function makeTrailMaterial() {
+  return new THREE.ShaderMaterial({
+    vertexShader: `
+      attribute float age;
+      varying  float vAge;
+      void main() {
+        vAge = age;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        // 오래될수록 점 크기가 줄어듦
+        gl_PointSize = max(1.5, 9.0 * (1.0 - age / 10.0));
+        gl_Position  = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: `
+      varying float vAge;
+      void main() {
+        float a = clamp(1.0 - vAge / 10.0, 0.0, 1.0);
+        a = a * a;                          // 이차 감쇠 — 끝부분에서 빠르게 사라짐
+        vec2  uv   = gl_PointCoord - 0.5;
+        float r    = dot(uv, uv) * 4.0;    // 0=중심, 1=가장자리
+        if (r > 1.0) discard;
+        float soft = 1.0 - smoothstep(0.4, 1.0, r);
+        // 최근=흰색, 오래될수록 하늘색으로 변하며 사라짐
+        vec3 col = mix(vec3(0.55, 0.75, 1.0), vec3(1.0), 1.0 - vAge / 10.0);
+        gl_FragColor = vec4(col, a * soft);
+      }
+    `,
+    transparent: true,
+    depthWrite:  false,
+    blending:    THREE.AdditiveBlending
+  });
+}
+
+class HandTrail {
+  constructor() {
+    this.pts     = [];   // { x, y, z, t }
+    this.lastAdd = 0;
+
+    this.rPos = new Float32Array(TRAIL_MAX_PTS * 3);
+    this.mPos = new Float32Array(TRAIL_MAX_PTS * 3);
+    this.ages = new Float32Array(TRAIL_MAX_PTS);
+
+    // 실제 궤적 지오메트리
+    this.rAgeAttr = new THREE.BufferAttribute(this.ages, 1);
+    const rGeo = new THREE.BufferGeometry();
+    rGeo.setAttribute('position', new THREE.BufferAttribute(this.rPos, 3));
+    rGeo.setAttribute('age',      this.rAgeAttr);
+    rGeo.setDrawRange(0, 0);
+    this.rGeo  = rGeo;
+    this.rMesh = new THREE.Points(rGeo, makeTrailMaterial());
+    this.rMesh.frustumCulled = false;
+    this.rMesh.visible = false;
+    scene.add(this.rMesh);
+
+    // 거울 궤적 지오메트리 (Z 반전 위치, age는 같은 배열 공유)
+    this.mAgeAttr = new THREE.BufferAttribute(this.ages, 1);
+    const mGeo = new THREE.BufferGeometry();
+    mGeo.setAttribute('position', new THREE.BufferAttribute(this.mPos, 3));
+    mGeo.setAttribute('age',      this.mAgeAttr);
+    mGeo.setDrawRange(0, 0);
+    this.mGeo  = mGeo;
+    this.mMesh = new THREE.Points(mGeo, makeTrailMaterial());
+    this.mMesh.frustumCulled = false;
+    this.mMesh.visible = false;
+    scene.add(this.mMesh);
+  }
+
+  update(timestamp, isPointing, lazyPos) {
+    const t = timestamp / 1000;
+
+    // 만료 점 제거
+    this.pts = this.pts.filter(p => t - p.t < TRAIL_LIFETIME);
+
+    // 포인팅 중일 때만 새 점 추가
+    if (isPointing && t - this.lastAdd > TRAIL_ADD_INTERVAL) {
+      this.pts.push({ x: lazyPos.x, y: lazyPos.y, z: lazyPos.z, t });
+      this.lastAdd = t;
+    }
+
+    const count = Math.min(this.pts.length, TRAIL_MAX_PTS);
+
+    for (let i = 0; i < count; i++) {
+      const p = this.pts[i];
+      const b = i * 3;
+      this.rPos[b]   = p.x;  this.rPos[b+1] = p.y;  this.rPos[b+2] = p.z;
+      this.ages[i]   = t - p.t;
+      this.mPos[b]   = p.x;  this.mPos[b+1] = p.y;
+      this.mPos[b+2] = spawnPos ? 2 * mirrorZ - p.z : p.z;
+    }
+
+    const vis = count > 0;
+    if (vis) {
+      this.rGeo.attributes.position.needsUpdate = true;
+      this.rAgeAttr.needsUpdate = true;
+      this.mGeo.attributes.position.needsUpdate = true;
+      this.mAgeAttr.needsUpdate = true;
+    }
+    this.rGeo.setDrawRange(0, count);
+    this.mGeo.setDrawRange(0, count);
+    this.rMesh.visible = vis;
+    this.mMesh.visible = vis && !!spawnPos;
+  }
+}
+
+const trail1 = new HandTrail();
+const trail2 = new HandTrail();
+
+// ────────────────────────────────────────────────────────────────
 //  GLOBAL STATE
 // ────────────────────────────────────────────────────────────────
 let spawnPos       = null;
@@ -721,6 +835,8 @@ function updatePointerDot(realHand, dot, mirrorDot) {
       idxTip.getWorldPosition(dot.lazyPos);
     }
   }
+
+  return pointing;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -875,9 +991,11 @@ btnStart.onclick = async () => {
     wasPinching1 = updatePinchSphere(hand1, pinch1, mirrorPinch1, pinchAudio1, wasPinching1);
     wasPinching2 = updatePinchSphere(hand2, pinch2, mirrorPinch2, pinchAudio2, wasPinching2);
 
-    // ── 포인터 빛점 (실제 + 거울) ────────────────────────────
-    updatePointerDot(hand1, ptrDot1, mirrorPtrDot1);
-    updatePointerDot(hand2, ptrDot2, mirrorPtrDot2);
+    // ── 포인터 빛점 + 궤적 (실제 + 거울) ────────────────────
+    const isPointing1 = updatePointerDot(hand1, ptrDot1, mirrorPtrDot1);
+    const isPointing2 = updatePointerDot(hand2, ptrDot2, mirrorPtrDot2);
+    trail1.update(timestamp, isPointing1, ptrDot1.lazyPos);
+    trail2.update(timestamp, isPointing2, ptrDot2.lazyPos);
 
     renderer.render(scene, camera);
   });
