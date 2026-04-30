@@ -347,6 +347,51 @@ let wasPinching1 = false;
 let wasPinching2 = false;
 
 // ────────────────────────────────────────────────────────────────
+//  포인터 감지 상수
+// ────────────────────────────────────────────────────────────────
+const INDEX_EXTEND_MIN = 0.14;  // 검지 끝~손목 최소 거리 (m) — 이상이면 폄 판정
+const CURL_MAX         = 0.13;  // 중지/약지/소지 끝~손목 최대 거리 (m) — 이하면 굽힘 판정
+const LAZY_LERP        = 0.07;  // 빛점 추종 속도 (낮을수록 느리게 따라옴)
+
+// ────────────────────────────────────────────────────────────────
+//  포인터 빛점 — 실제 2개 + 거울 2개
+// ────────────────────────────────────────────────────────────────
+function createPointerDot() {
+  // 중심 흰 점
+  const coreMat = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    transparent: true, opacity: 1.0,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  const core = new THREE.Mesh(new THREE.SphereGeometry(0.008, 10, 10), coreMat);
+  core.visible = false;
+
+  // 외곽 헤일로 (additive로 빛 번짐 표현)
+  const haloMat = new THREE.MeshBasicMaterial({
+    color: 0x88ccff,
+    transparent: true, opacity: 0.28,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  const halo = new THREE.Mesh(new THREE.SphereGeometry(0.024, 10, 10), haloMat);
+  core.add(halo);
+
+  scene.add(core);
+  return { mesh: core, lazyPos: new THREE.Vector3() };
+}
+
+const ptrDot1       = createPointerDot();
+const ptrDot2       = createPointerDot();
+const mirrorPtrDot1 = createPointerDot();
+const mirrorPtrDot2 = createPointerDot();
+
+// 포인터 판정용 Vector3 (함수 간 공유)
+const _ptrWrist = new THREE.Vector3();
+const _ptrIndex = new THREE.Vector3();
+const _ptrMid   = new THREE.Vector3();
+const _ptrRing  = new THREE.Vector3();
+const _ptrPinky = new THREE.Vector3();
+
+// ────────────────────────────────────────────────────────────────
 //  GLOBAL STATE
 // ────────────────────────────────────────────────────────────────
 let spawnPos       = null;
@@ -618,6 +663,67 @@ function updatePinchSphere(realHand, pinchVis, mirrorPinchVis, pinchAudio, wasPi
 }
 
 // ────────────────────────────────────────────────────────────────
+//  포인터 감지 & 빛점 업데이트
+// ────────────────────────────────────────────────────────────────
+function detectPointing(realHand) {
+  const wrist  = realHand.joints['wrist'];
+  const idxTip = realHand.joints['index-finger-tip'];
+  const midTip = realHand.joints['middle-finger-tip'];
+  const rngTip = realHand.joints['ring-finger-tip'];
+  const pnkTip = realHand.joints['pinky-finger-tip'];
+
+  if (!wrist || !wrist.visible || !idxTip || !idxTip.visible) return false;
+  if (!midTip || !midTip.visible || !rngTip || !rngTip.visible || !pnkTip || !pnkTip.visible) return false;
+
+  wrist.getWorldPosition(_ptrWrist);
+  idxTip.getWorldPosition(_ptrIndex);
+  if (_ptrWrist.distanceTo(_ptrIndex) < INDEX_EXTEND_MIN) return false;
+
+  midTip.getWorldPosition(_ptrMid);
+  rngTip.getWorldPosition(_ptrRing);
+  pnkTip.getWorldPosition(_ptrPinky);
+
+  return (
+    _ptrWrist.distanceTo(_ptrMid)   < CURL_MAX &&
+    _ptrWrist.distanceTo(_ptrRing)  < CURL_MAX &&
+    _ptrWrist.distanceTo(_ptrPinky) < CURL_MAX
+  );
+}
+
+function updatePointerDot(realHand, dot, mirrorDot) {
+  const idxTip  = realHand.joints['index-finger-tip'];
+  const pointing = detectPointing(realHand);
+
+  if (pointing && idxTip && idxTip.visible) {
+    idxTip.getWorldPosition(_ptrIndex);
+
+    // lazy lerp — 현재 위치에서 검지 끝으로 천천히 이동
+    dot.lazyPos.lerp(_ptrIndex, LAZY_LERP);
+
+    dot.mesh.position.copy(dot.lazyPos);
+    dot.mesh.visible = true;
+
+    // 거울: 동일 lazyPos의 Z만 반전
+    if (spawnPos) {
+      mirrorDot.mesh.position.set(
+        dot.lazyPos.x,
+        dot.lazyPos.y,
+        2 * mirrorZ - dot.lazyPos.z
+      );
+      mirrorDot.mesh.visible = true;
+    }
+  } else {
+    dot.mesh.visible       = false;
+    mirrorDot.mesh.visible = false;
+
+    // 꺼질 때 현재 검지 위치로 스냅 (다음 활성화 시 튀지 않도록)
+    if (idxTip && idxTip.visible) {
+      idxTip.getWorldPosition(dot.lazyPos);
+    }
+  }
+}
+
+// ────────────────────────────────────────────────────────────────
 //  UI
 // ────────────────────────────────────────────────────────────────
 const statusEl  = document.getElementById('status');
@@ -768,6 +874,10 @@ btnStart.onclick = async () => {
     // ── 핀치 구체 (실제 + 거울) ───────────────────────────────
     wasPinching1 = updatePinchSphere(hand1, pinch1, mirrorPinch1, pinchAudio1, wasPinching1);
     wasPinching2 = updatePinchSphere(hand2, pinch2, mirrorPinch2, pinchAudio2, wasPinching2);
+
+    // ── 포인터 빛점 (실제 + 거울) ────────────────────────────
+    updatePointerDot(hand1, ptrDot1, mirrorPtrDot1);
+    updatePointerDot(hand2, ptrDot2, mirrorPtrDot2);
 
     renderer.render(scene, camera);
   });
