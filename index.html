@@ -59,15 +59,13 @@
 <script type="importmap">
 {
   "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
   }
 }
 </script>
 
 <script type="module">
 import * as THREE from 'three';
-import { XRHandModelFactory } from 'three/addons/webxr/XRHandModelFactory.js';
 
 // ────────────────────────────────────────────────────────────────
 //  CONSTANTS
@@ -229,35 +227,31 @@ let grayClipPlane = null;
 let blueClipPlane = null;
 
 // ────────────────────────────────────────────────────────────────
-//  HAND TRACKING — 실제 손 (XRHandModelFactory 메쉬)
+//  HAND TRACKING — XR 손 공간 (조인트 데이터 소스)
 // ────────────────────────────────────────────────────────────────
-const handModelFactory = new XRHandModelFactory();
-handModelFactory.setPath('https://cdn.jsdelivr.net/npm/@webxr-input-profiles/assets@1.0.3/dist/profiles/');
-
 const hand1 = renderer.xr.getHand(0);
-hand1.add(handModelFactory.createHandModel(hand1, 'mesh'));
 scene.add(hand1);
 
 const hand2 = renderer.xr.getHand(1);
-hand2.add(handModelFactory.createHandModel(hand2, 'mesh'));
 scene.add(hand2);
 
 // ────────────────────────────────────────────────────────────────
-//  MIRROR HAND — Z 반전 스켈레톤 (조인트 구체 + 본 라인)
+//  손 시각화 팩토리 — 조인트 구체 + 본 라인
+//  realHand: 흰색/크림, mirrorHand: 파란색
 // ────────────────────────────────────────────────────────────────
-function createMirrorHandVis() {
+function createHandVis(jointColor, lineColor, emissiveColor) {
   const group = new THREE.Group();
 
   const jointMat = new THREE.MeshStandardMaterial({
-    color: 0x88ccff,
+    color: jointColor,
     transparent: true,
-    opacity: 0.75,
+    opacity: 0.85,
     roughness: 0.2,
-    metalness: 0.6,
-    emissive: new THREE.Color(0x2255ff),
-    emissiveIntensity: 0.4
+    metalness: 0.5,
+    emissive: new THREE.Color(emissiveColor),
+    emissiveIntensity: 0.35
   });
-  const jointGeo = new THREE.SphereGeometry(0.007, 8, 8);
+  const jointGeo = new THREE.SphereGeometry(0.008, 8, 8);
   const joints = {};
 
   HAND_JOINTS.forEach(name => {
@@ -267,12 +261,12 @@ function createMirrorHandVis() {
     joints[name] = mesh;
   });
 
-  // 본 라인 세그먼트 (27개 연결 × 2점 × xyz)
+  // 본 라인 세그먼트
   const linePositions = new Float32Array(HAND_CONNECTIONS.length * 6);
   const lineGeo = new THREE.BufferGeometry();
   lineGeo.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
   const lineMat = new THREE.LineBasicMaterial({
-    color: 0x55aaff, transparent: true, opacity: 0.55
+    color: lineColor, transparent: true, opacity: 0.6
   });
   const lines = new THREE.LineSegments(lineGeo, lineMat);
   lines.visible = false;
@@ -282,8 +276,15 @@ function createMirrorHandVis() {
   return { group, joints, lines, lineGeo, linePositions };
 }
 
-const mirrorVis1 = createMirrorHandVis();
-const mirrorVis2 = createMirrorHandVis();
+// 실제 손 — 흰색/크림
+const realVis1 = createHandVis(0xffe8d6, 0xffccaa, 0xffaa66);
+const realVis2 = createHandVis(0xffe8d6, 0xffccaa, 0xffaa66);
+scene.add(realVis1.group);
+scene.add(realVis2.group);
+
+// 거울 손 — 파란색
+const mirrorVis1 = createHandVis(0x88ccff, 0x55aaff, 0x2255ff);
+const mirrorVis2 = createHandVis(0x88ccff, 0x55aaff, 0x2255ff);
 scene.add(mirrorVis1.group);
 scene.add(mirrorVis2.group);
 
@@ -453,11 +454,11 @@ function updateSphere(timestamp, userZ) {
 }
 
 // ────────────────────────────────────────────────────────────────
-//  MIRROR HAND UPDATE — 매 프레임 조인트 world pos → Z 반전
+//  손 시각화 업데이트 — invertZ=true 이면 거울 손
 // ────────────────────────────────────────────────────────────────
 const _tmpPos = new THREE.Vector3();
 
-function updateMirrorHandVis(realHand, vis) {
+function updateHandVis(realHand, vis, invertZ) {
   if (!spawnPos) {
     HAND_JOINTS.forEach(n => { vis.joints[n].visible = false; });
     vis.lines.visible = false;
@@ -471,7 +472,8 @@ function updateMirrorHandVis(realHand, vis) {
     const sphere = vis.joints[name];
     if (joint && joint.visible) {
       joint.getWorldPosition(_tmpPos);
-      sphere.position.set(_tmpPos.x, _tmpPos.y, 2 * mirrorZ - _tmpPos.z);
+      const z = invertZ ? 2 * mirrorZ - _tmpPos.z : _tmpPos.z;
+      sphere.position.set(_tmpPos.x, _tmpPos.y, z);
       sphere.visible = true;
       anyJoint = true;
     } else {
@@ -479,7 +481,6 @@ function updateMirrorHandVis(realHand, vis) {
     }
   }
 
-  // 본 라인 위치 갱신
   const pos = vis.linePositions;
   HAND_CONNECTIONS.forEach(([a, b], i) => {
     const ma = vis.joints[a];
@@ -636,9 +637,13 @@ btnStart.onclick = async () => {
     updateSphere(timestamp, h.z);
     prevTimestamp = timestamp;
 
-    // ── 거울 손: 두 손 모두 Z 반전 ───────────────────────────
-    updateMirrorHandVis(hand1, mirrorVis1);
-    updateMirrorHandVis(hand2, mirrorVis2);
+    // ── 실제 손 (패스스루 위 크림색) ─────────────────────────
+    updateHandVis(hand1, realVis1, false);
+    updateHandVis(hand2, realVis2, false);
+
+    // ── 거울 손 (Z 반전 파란색) ───────────────────────────────
+    updateHandVis(hand1, mirrorVis1, true);
+    updateHandVis(hand2, mirrorVis2, true);
 
     renderer.render(scene, camera);
   });
