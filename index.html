@@ -56,22 +56,73 @@
   <button id="btnSummon">구체 소환</button>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
-<script>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { XRHandModelFactory } from 'three/addons/webxr/XRHandModelFactory.js';
+
 // ────────────────────────────────────────────────────────────────
 //  CONSTANTS
 // ────────────────────────────────────────────────────────────────
-const MIRROR_DIST  = 1.5;   // 거울까지 거리 (m)
-const CUBE_SIZE    = 0.20;  // 큐브 한 변 길이 (m)
-const HEAD_ABOVE   = 0.30;  // 머리 위 높이 (m)
+const MIRROR_DIST  = 1.5;
+const CUBE_SIZE    = 0.20;
+const HEAD_ABOVE   = 0.30;
 
-// 구체
-const SPHERE_RADIUS      = 0.12;   // 구체 반지름 (m)
-const SPHERE_MOVE_SPEED  = 0.35;   // 접근 속도 (m/s)
-const SPHERE_STOP_DIST   = 0.5;    // 사용자 앞에서 멈출 거리 (m)
-const SPHERE_HOVER_TIME  = 3.0;    // 멈추고 호버링하는 시간 (초)
-const SPHERE_RISE_SPEED  = 0.12;   // 위로 떠오르는 속도 (m/s)
-const SPHERE_FADE_SPEED  = 0.35;   // 소멸 속도 (opacity/s)
+const SPHERE_RADIUS      = 0.12;
+const SPHERE_MOVE_SPEED  = 0.35;
+const SPHERE_STOP_DIST   = 0.5;
+const SPHERE_HOVER_TIME  = 3.0;
+const SPHERE_RISE_SPEED  = 0.12;
+const SPHERE_FADE_SPEED  = 0.35;
+
+// WebXR hand joint names (spec order, 25 joints)
+const HAND_JOINTS = [
+  'wrist',
+  'thumb-metacarpal', 'thumb-phalanx-proximal', 'thumb-phalanx-distal', 'thumb-tip',
+  'index-finger-metacarpal', 'index-finger-phalanx-proximal', 'index-finger-phalanx-intermediate', 'index-finger-phalanx-distal', 'index-finger-tip',
+  'middle-finger-metacarpal', 'middle-finger-phalanx-proximal', 'middle-finger-phalanx-intermediate', 'middle-finger-phalanx-distal', 'middle-finger-tip',
+  'ring-finger-metacarpal', 'ring-finger-phalanx-proximal', 'ring-finger-phalanx-intermediate', 'ring-finger-phalanx-distal', 'ring-finger-tip',
+  'pinky-finger-metacarpal', 'pinky-finger-phalanx-proximal', 'pinky-finger-phalanx-intermediate', 'pinky-finger-phalanx-distal', 'pinky-finger-tip'
+];
+
+// Bone connections for skeleton lines
+const HAND_CONNECTIONS = [
+  ['wrist', 'thumb-metacarpal'],
+  ['wrist', 'index-finger-metacarpal'],
+  ['wrist', 'middle-finger-metacarpal'],
+  ['wrist', 'ring-finger-metacarpal'],
+  ['wrist', 'pinky-finger-metacarpal'],
+  ['index-finger-metacarpal', 'middle-finger-metacarpal'],
+  ['middle-finger-metacarpal', 'ring-finger-metacarpal'],
+  ['ring-finger-metacarpal', 'pinky-finger-metacarpal'],
+  ['thumb-metacarpal', 'thumb-phalanx-proximal'],
+  ['thumb-phalanx-proximal', 'thumb-phalanx-distal'],
+  ['thumb-phalanx-distal', 'thumb-tip'],
+  ['index-finger-metacarpal', 'index-finger-phalanx-proximal'],
+  ['index-finger-phalanx-proximal', 'index-finger-phalanx-intermediate'],
+  ['index-finger-phalanx-intermediate', 'index-finger-phalanx-distal'],
+  ['index-finger-phalanx-distal', 'index-finger-tip'],
+  ['middle-finger-metacarpal', 'middle-finger-phalanx-proximal'],
+  ['middle-finger-phalanx-proximal', 'middle-finger-phalanx-intermediate'],
+  ['middle-finger-phalanx-intermediate', 'middle-finger-phalanx-distal'],
+  ['middle-finger-phalanx-distal', 'middle-finger-tip'],
+  ['ring-finger-metacarpal', 'ring-finger-phalanx-proximal'],
+  ['ring-finger-phalanx-proximal', 'ring-finger-phalanx-intermediate'],
+  ['ring-finger-phalanx-intermediate', 'ring-finger-phalanx-distal'],
+  ['ring-finger-phalanx-distal', 'ring-finger-tip'],
+  ['pinky-finger-metacarpal', 'pinky-finger-phalanx-proximal'],
+  ['pinky-finger-phalanx-proximal', 'pinky-finger-phalanx-intermediate'],
+  ['pinky-finger-phalanx-intermediate', 'pinky-finger-phalanx-distal'],
+  ['pinky-finger-phalanx-distal', 'pinky-finger-tip'],
+];
 
 // ────────────────────────────────────────────────────────────────
 //  THREE.JS SCENE
@@ -84,7 +135,7 @@ renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
 renderer.xr.enabled = true;
 renderer.setClearColor(0x000000, 0);
-renderer.localClippingEnabled = true;  // 구체 반반 클리핑에 필요
+renderer.localClippingEnabled = true;
 document.body.appendChild(renderer.domElement);
 
 // 조명
@@ -96,14 +147,12 @@ scene.add(dl);
 // ── 빨간 큐브 ──────────────────────────────────────────────────
 const cubeGeo = new THREE.BoxGeometry(CUBE_SIZE, CUBE_SIZE, CUBE_SIZE);
 
-// 현실 큐브 (선명한 빨강)
 const realCube = new THREE.Mesh(
   cubeGeo,
   new THREE.MeshStandardMaterial({ color: 0xff1a1a, roughness: 0.25, metalness: 0.15 })
 );
 scene.add(realCube);
 
-// 거울 큐브 (조금 밝은 빨강)
 const mirrorCube = new THREE.Mesh(
   cubeGeo,
   new THREE.MeshStandardMaterial({ color: 0xff7777, roughness: 0.25, metalness: 0.15 })
@@ -117,19 +166,14 @@ guideGroup.visible = false;
 
 const barMat = new THREE.MeshBasicMaterial({ color: 0x00e5ff, side: THREE.DoubleSide });
 
-// 수평 바
 guideGroup.add(
   Object.assign(new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.012, 0.04), barMat))
 );
-
-// 양쪽 세로 포스트
 [-0.58, 0.58].forEach(x => {
   const post = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.28, 0.04), barMat);
   post.position.set(x, 0.14, 0);
   guideGroup.add(post);
 });
-
-// 화살표
 const arrowGeo = new THREE.ConeGeometry(0.06, 0.15, 4);
 arrowGeo.rotateX(Math.PI / 2);
 const arrow = new THREE.Mesh(arrowGeo, barMat);
@@ -138,11 +182,9 @@ guideGroup.add(arrow);
 
 // ────────────────────────────────────────────────────────────────
 //  구체: 거울을 통과하는 오브젝트
-//  거울 뒤 → 회색, 거울 통과 중 → 반반(클리핑), 거울 앞 → 파란색
 // ────────────────────────────────────────────────────────────────
 const sphereGeo = new THREE.SphereGeometry(SPHERE_RADIUS, 32, 32);
 
-// 회색 구체 (거울 뒤쪽 영역에만 표시)
 const grayMat = new THREE.MeshStandardMaterial({
   color: 0x9e9e9e, roughness: 0.4, metalness: 0.5,
   transparent: true, opacity: 1
@@ -151,7 +193,6 @@ const graySphere = new THREE.Mesh(sphereGeo, grayMat);
 graySphere.visible = false;
 scene.add(graySphere);
 
-// 파란 구체 (거울 앞쪽 영역에만 표시)
 const blueMat = new THREE.MeshStandardMaterial({
   color: 0x1565c0, roughness: 0.15, metalness: 0.4,
   transparent: true, opacity: 1,
@@ -161,13 +202,11 @@ const blueSphere = new THREE.Mesh(sphereGeo, blueMat);
 blueSphere.visible = false;
 scene.add(blueSphere);
 
-// ── 거울 통과 이펙트 ─────────────────────────────────────────
-// 1) 파문 링 3개: 거울 평면(XY)에서 바깥으로 퍼지는 동심원
+// ── 거울 통과 이펙트 ──────────────────────────────────────────
 const RIPPLE_COUNT = 3;
 const rippleMeshes = [];
 const rippleMats  = [];
 for (let i = 0; i < RIPPLE_COUNT; i++) {
-  // TorusGeometry는 기본으로 XY 평면에 위치 — 거울 면(Z법선)에 딱 맞음
   const rMat = new THREE.MeshBasicMaterial({
     color: 0x4fc3f7, transparent: true, opacity: 0, side: THREE.DoubleSide
   });
@@ -178,40 +217,85 @@ for (let i = 0; i < RIPPLE_COUNT; i++) {
   rippleMats.push(rMat);
 }
 
-// 2) 플래시 버스트: 교차점에서 팽창 후 소멸하는 반투명 구
-const flashMat = new THREE.MeshBasicMaterial({
-  color: 0x90caf9, transparent: true, opacity: 0
-});
+const flashMat = new THREE.MeshBasicMaterial({ color: 0x90caf9, transparent: true, opacity: 0 });
 const flashMesh = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 16), flashMat);
 flashMesh.visible = false;
 scene.add(flashMesh);
 
-// 3) 포인트 라이트 플래시 (주변을 파랗게 순간 비춤)
 const mirrorLight = new THREE.PointLight(0x4fc3f7, 0, 4);
 scene.add(mirrorLight);
 
-// 클리핑 플레인 — mirrorZ 확정 후 초기화
-// grayClipPlane : z > mirrorZ 를 제거 (거울 뒤쪽만 보임)
-// blueClipPlane : z < mirrorZ 를 제거 (거울 앞쪽만 보임)
-// THREE.Plane 방정식: dot(normal, p) + constant < 0 이면 클리핑
 let grayClipPlane = null;
 let blueClipPlane = null;
 
 // ────────────────────────────────────────────────────────────────
+//  HAND TRACKING — 실제 손 (XRHandModelFactory 메쉬)
+// ────────────────────────────────────────────────────────────────
+const handModelFactory = new XRHandModelFactory();
+handModelFactory.setPath('https://cdn.jsdelivr.net/npm/@webxr-input-profiles/assets@1.0.3/dist/profiles/');
+
+const hand1 = renderer.xr.getHand(0);
+hand1.add(handModelFactory.createHandModel(hand1, 'mesh'));
+scene.add(hand1);
+
+const hand2 = renderer.xr.getHand(1);
+hand2.add(handModelFactory.createHandModel(hand2, 'mesh'));
+scene.add(hand2);
+
+// ────────────────────────────────────────────────────────────────
+//  MIRROR HAND — Z 반전 스켈레톤 (조인트 구체 + 본 라인)
+// ────────────────────────────────────────────────────────────────
+function createMirrorHandVis() {
+  const group = new THREE.Group();
+
+  const jointMat = new THREE.MeshStandardMaterial({
+    color: 0x88ccff,
+    transparent: true,
+    opacity: 0.75,
+    roughness: 0.2,
+    metalness: 0.6,
+    emissive: new THREE.Color(0x2255ff),
+    emissiveIntensity: 0.4
+  });
+  const jointGeo = new THREE.SphereGeometry(0.007, 8, 8);
+  const joints = {};
+
+  HAND_JOINTS.forEach(name => {
+    const mesh = new THREE.Mesh(jointGeo, jointMat);
+    mesh.visible = false;
+    group.add(mesh);
+    joints[name] = mesh;
+  });
+
+  // 본 라인 세그먼트 (27개 연결 × 2점 × xyz)
+  const linePositions = new Float32Array(HAND_CONNECTIONS.length * 6);
+  const lineGeo = new THREE.BufferGeometry();
+  lineGeo.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
+  const lineMat = new THREE.LineBasicMaterial({
+    color: 0x55aaff, transparent: true, opacity: 0.55
+  });
+  const lines = new THREE.LineSegments(lineGeo, lineMat);
+  lines.visible = false;
+  lines.frustumCulled = false;
+  group.add(lines);
+
+  return { group, joints, lines, lineGeo, linePositions };
+}
+
+const mirrorVis1 = createMirrorHandVis();
+const mirrorVis2 = createMirrorHandVis();
+scene.add(mirrorVis1.group);
+scene.add(mirrorVis2.group);
+
+// ────────────────────────────────────────────────────────────────
 //  GLOBAL STATE
 // ────────────────────────────────────────────────────────────────
-let spawnPos       = null;   // { x, z } 최초 스폰 위치
-let spawnEyeY      = 1.5;   // 눈높이 (m)
-let mirrorZ        = 0;      // 거울 평면의 Z 좌표
-let scenario       = 1;      // 1: 현실+거울, 2: 거울만
-let currentSession = null;   // 활성 XR 세션 참조 (중복 요청 방지용)
+let spawnPos       = null;
+let spawnEyeY      = 1.5;
+let mirrorZ        = 0;
+let scenario       = 1;
+let currentSession = null;
 
-// 구체 애니메이션
-// phase: 'idle' | 'moving' | 'hovering' | 'rising'
-//   idle    - 숨겨진 상태 (대기)
-//   moving  - 거울 뒤에서 사용자 쪽으로 이동
-//   hovering- 사용자 앞 0.5m에서 멈춰 떠있음
-//   rising  - 위로 떠오르며 투명해지다 사라짐
 let spherePhase     = 'idle';
 let sphereZ         = 0;
 let sphereY         = 1.5;
@@ -219,17 +303,13 @@ let sphereAlpha     = 1;
 let sphereHoverTime = 0;
 let prevTimestamp   = 0;
 
-// 거울 이펙트 타이머
-// -1 = 비활성, 0 이상 = 경과 시간(초)
 let mirrorEffectTimer = -1;
-let mirrorTouched     = false; // 이번 소환에서 이미 트리거됐는지
+let mirrorTouched     = false;
 
 // ────────────────────────────────────────────────────────────────
 //  HELPER
 // ────────────────────────────────────────────────────────────────
-function reflectZ(z) {
-  return 2 * mirrorZ - z;
-}
+function reflectZ(z) { return 2 * mirrorZ - z; }
 
 function resetSphereVisuals() {
   graySphere.visible = false;
@@ -238,52 +318,41 @@ function resetSphereVisuals() {
   blueMat.opacity    = 1;
 }
 
-// ── 거울 통과 이펙트 트리거 ───────────────────────────────────
 function triggerMirrorEffect(x, y, z) {
   mirrorEffectTimer = 0;
-
-  // 링·플래시를 거울 교차 위치에 배치
   rippleMeshes.forEach((m, i) => {
     m.position.set(x, y, z);
     m.scale.setScalar(0.01);
     m.visible = true;
     rippleMats[i].opacity = 0;
   });
-
   flashMesh.position.set(x, y, z);
   flashMesh.scale.setScalar(0.01);
   flashMesh.visible = true;
   flashMat.opacity  = 0;
-
   mirrorLight.position.set(x, y, z);
   mirrorLight.intensity = 0;
 }
 
-// ── 거울 이펙트 매 프레임 업데이트 ──────────────────────────────
 function updateMirrorEffect(dt) {
   if (mirrorEffectTimer < 0) return;
   mirrorEffectTimer += dt;
 
   const t = mirrorEffectTimer;
-  const RING_DELAY    = 0.13;  // 링 간 딜레이 (초)
-  const RING_DURATION = 0.65;  // 링 하나의 수명 (초)
-  const MAX_RADIUS    = 0.55;  // 최대 반지름 (m)
+  const RING_DELAY    = 0.13;
+  const RING_DURATION = 0.65;
+  const MAX_RADIUS    = 0.55;
   const TOTAL_TIME    = RING_DELAY * (RIPPLE_COUNT - 1) + RING_DURATION + 0.1;
 
-  // 파문 링
   rippleMeshes.forEach((mesh, i) => {
     const localT = t - i * RING_DELAY;
-    if (localT <= 0 || localT > RING_DURATION) {
-      mesh.visible = false;
-      return;
-    }
-    const p = localT / RING_DURATION;       // 0 → 1
-    mesh.scale.setScalar(p * MAX_RADIUS);   // 반지름 확대
-    rippleMats[i].opacity = (1 - p) * 0.75; // 서서히 투명
+    if (localT <= 0 || localT > RING_DURATION) { mesh.visible = false; return; }
+    const p = localT / RING_DURATION;
+    mesh.scale.setScalar(p * MAX_RADIUS);
+    rippleMats[i].opacity = (1 - p) * 0.75;
     mesh.visible = true;
   });
 
-  // 플래시 버스트 (첫 0.25초에 팽창 후 소멸)
   const FLASH_DUR = 0.25;
   if (t < FLASH_DUR) {
     const fp = t / FLASH_DUR;
@@ -294,16 +363,11 @@ function updateMirrorEffect(dt) {
     flashMesh.visible = false;
   }
 
-  // 포인트 라이트 (첫 0.3초에 강도 0→4→0)
   const LIGHT_DUR = 0.3;
-  if (t < LIGHT_DUR) {
-    const lp = t / LIGHT_DUR;
-    mirrorLight.intensity = Math.sin(lp * Math.PI) * 4.0;
-  } else {
-    mirrorLight.intensity = 0;
-  }
+  mirrorLight.intensity = t < LIGHT_DUR
+    ? Math.sin((t / LIGHT_DUR) * Math.PI) * 4.0
+    : 0;
 
-  // 이펙트 종료
   if (t > TOTAL_TIME) {
     mirrorEffectTimer = -1;
     rippleMeshes.forEach(m => { m.visible = false; });
@@ -312,33 +376,25 @@ function updateMirrorEffect(dt) {
   }
 }
 
-// ── 구체 소환 시작 ────────────────────────────────────────────
 function startSphereAnimation() {
-  sphereZ           = mirrorZ - 1.0;  // 거울 뒤 1m 지점에서 시작
-  sphereY           = spawnEyeY;      // 스폰 시점 눈높이에 고정
+  sphereZ           = mirrorZ - 1.0;
+  sphereY           = spawnEyeY;
   spherePhase       = 'moving';
   sphereAlpha       = 1;
   grayMat.opacity   = 1;
   blueMat.opacity   = 1;
-  mirrorTouched     = false;          // 이펙트 트리거 리셋
+  mirrorTouched     = false;
   mirrorEffectTimer = -1;
 }
 
-// ── 구체 업데이트 (매 프레임) ─────────────────────────────────
 function updateSphere(timestamp, userZ) {
-  if (spherePhase === 'idle' || !spawnPos) {
-    resetSphereVisuals();
-    return;
-  }
+  if (spherePhase === 'idle' || !spawnPos) { resetSphereVisuals(); return; }
 
-  // delta time (max 50ms 캡 — 프레임 드랍 방지)
   const dt = prevTimestamp > 0
     ? Math.min((timestamp - prevTimestamp) / 1000, 0.05)
     : 0.016;
 
-  // ── State machine ────────────────────────────────────────────
   if (spherePhase === 'moving') {
-    // 거울 뒤 → 사용자 앞 SPHERE_STOP_DIST 지점까지 이동
     sphereZ += SPHERE_MOVE_SPEED * dt;
     const stopZ = userZ - SPHERE_STOP_DIST;
     if (sphereZ >= stopZ) {
@@ -346,21 +402,14 @@ function updateSphere(timestamp, userZ) {
       spherePhase     = 'hovering';
       sphereHoverTime = SPHERE_HOVER_TIME;
     }
-
   } else if (spherePhase === 'hovering') {
-    // 멈춰서 천천히 떠다님 (미세 전진 없음 — 위협감만 유지)
     sphereHoverTime -= dt;
-    if (sphereHoverTime <= 0) {
-      spherePhase = 'rising';
-    }
-
+    if (sphereHoverTime <= 0) spherePhase = 'rising';
   } else if (spherePhase === 'rising') {
-    // 위로 떠오르며 사라짐
     sphereY     += SPHERE_RISE_SPEED * dt;
     sphereAlpha -= SPHERE_FADE_SPEED * dt;
     grayMat.opacity = Math.max(sphereAlpha, 0);
     blueMat.opacity = Math.max(sphereAlpha, 0);
-
     if (sphereAlpha <= 0) {
       spherePhase = 'idle';
       resetSphereVisuals();
@@ -370,8 +419,7 @@ function updateSphere(timestamp, userZ) {
     }
   }
 
-  // ── 위치: 자연스러운 위아래 보빙(bob) 추가 ───────────────────
-  const bob = Math.sin(timestamp * 0.0025) * 0.015;
+  const bob  = Math.sin(timestamp * 0.0025) * 0.015;
   const posX = spawnPos.x;
   const posY = sphereY + bob;
   const posZ = sphereZ;
@@ -379,41 +427,73 @@ function updateSphere(timestamp, userZ) {
   graySphere.position.set(posX, posY, posZ);
   blueSphere.position.set(posX, posY, posZ);
 
-  // ── 거울 기준 클리핑 & 가시성 결정 ──────────────────────────
-  //  fullyBehind  : 구체 전체가 거울 뒤 → 회색만
-  //  fullyInFront : 구체 전체가 거울 앞 → 파란색만
-  //  crossing     : 거울 면에 걸쳐 있음 → 반반 클리핑
   const fullyBehind  = posZ < mirrorZ - SPHERE_RADIUS;
   const fullyInFront = posZ > mirrorZ + SPHERE_RADIUS;
 
   if (fullyBehind) {
-    // 클리핑 해제 — 구체 전체 회색
     grayMat.clippingPlanes = [];
     graySphere.visible = true;
     blueSphere.visible = false;
-
   } else if (fullyInFront) {
-    // 클리핑 해제 — 구체 전체 파란색
     blueMat.clippingPlanes = [];
     graySphere.visible = false;
     blueSphere.visible = true;
-
   } else {
-    // 거울 통과 중: 두 구체를 거울 평면으로 잘라서 동시에 표시
     grayMat.clippingPlanes = [grayClipPlane];
     blueMat.clippingPlanes = [blueClipPlane];
     graySphere.visible = true;
     blueSphere.visible = true;
-
-    // 첫 crossing 진입 시 이펙트 1회 트리거
     if (!mirrorTouched) {
       mirrorTouched = true;
       triggerMirrorEffect(posX, posY, mirrorZ);
     }
   }
 
-  // 이펙트 애니메이션 진행
   updateMirrorEffect(dt);
+}
+
+// ────────────────────────────────────────────────────────────────
+//  MIRROR HAND UPDATE — 매 프레임 조인트 world pos → Z 반전
+// ────────────────────────────────────────────────────────────────
+const _tmpPos = new THREE.Vector3();
+
+function updateMirrorHandVis(realHand, vis) {
+  if (!spawnPos) {
+    HAND_JOINTS.forEach(n => { vis.joints[n].visible = false; });
+    vis.lines.visible = false;
+    return;
+  }
+
+  let anyJoint = false;
+
+  for (const name of HAND_JOINTS) {
+    const joint  = realHand.joints[name];
+    const sphere = vis.joints[name];
+    if (joint && joint.visible) {
+      joint.getWorldPosition(_tmpPos);
+      sphere.position.set(_tmpPos.x, _tmpPos.y, 2 * mirrorZ - _tmpPos.z);
+      sphere.visible = true;
+      anyJoint = true;
+    } else {
+      sphere.visible = false;
+    }
+  }
+
+  // 본 라인 위치 갱신
+  const pos = vis.linePositions;
+  HAND_CONNECTIONS.forEach(([a, b], i) => {
+    const ma = vis.joints[a];
+    const mb = vis.joints[b];
+    const base = i * 6;
+    if (ma.visible && mb.visible) {
+      pos[base]     = ma.position.x; pos[base + 1] = ma.position.y; pos[base + 2] = ma.position.z;
+      pos[base + 3] = mb.position.x; pos[base + 4] = mb.position.y; pos[base + 5] = mb.position.z;
+    } else {
+      for (let k = 0; k < 6; k++) pos[base + k] = 0;
+    }
+  });
+  vis.lineGeo.attributes.position.needsUpdate = true;
+  vis.lines.visible = anyJoint;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -440,16 +520,13 @@ toggleBtn.onclick = () => {
 
 btnSummon.onclick = () => {
   if (!spawnPos) return;
-
   if (spherePhase !== 'idle') {
-    // 애니메이션 중 → 즉시 리셋
     spherePhase = 'idle';
     resetSphereVisuals();
     btnSummon.textContent = '구체 소환';
     btnSummon.classList.remove('active');
     return;
   }
-
   startSphereAnimation();
   btnSummon.textContent = '소환 취소';
   btnSummon.classList.add('active');
@@ -486,11 +563,7 @@ function exitSessionUI() {
 }
 
 btnStart.onclick = async () => {
-  // 세션이 이미 활성화 → 종료
-  if (currentSession) {
-    currentSession.end();
-    return;
-  }
+  if (currentSession) { currentSession.end(); return; }
 
   if (!navigator.xr) {
     setStatus('⚠ WebXR 없음 — Quest 브라우저인가요?');
@@ -507,7 +580,7 @@ btnStart.onclick = async () => {
   try {
     session = await navigator.xr.requestSession('immersive-ar', {
       requiredFeatures: ['local-floor'],
-      optionalFeatures: ['dom-overlay'],
+      optionalFeatures: ['dom-overlay', 'hand-tracking'],
       domOverlay: { root: document.getElementById('ui') }
     });
   } catch (e) {
@@ -521,16 +594,9 @@ btnStart.onclick = async () => {
   enterSessionUI(session);
   setStatus('⏳ 스폰 위치 초기화 중...');
 
-  // 메타 버튼으로 세션이 blurred 상태가 됐을 때 처리
   session.addEventListener('visibilitychange', () => {
-    // visible-blurred: 메타 시스템 오버레이가 앞에 떠 있는 상태
-    // 세션은 살아있으므로 아무것도 하지 않음 — 버튼 상태도 그대로 유지
-    // (이전에 btnStart가 노출된 채로 클릭되던 문제는 currentSession 가드로 차단됨)
-    if (session.visibilityState === 'visible') {
-      setStatus('▶ AR 재개됨');
-    }
+    if (session.visibilityState === 'visible') setStatus('▶ AR 재개됨');
   });
-
   session.addEventListener('end', exitSessionUI);
 
   // ── 메인 루프 ──────────────────────────────────────────────
@@ -540,20 +606,14 @@ btnStart.onclick = async () => {
     const pose = frame.getViewerPose(refSpace);
     if (!pose) { renderer.render(scene, camera); return; }
 
-    const h = pose.transform.position; // 헤드 위치
+    const h = pose.transform.position;
 
     // ── 최초 1회: 스폰 포지션 & 거울 평면 기록 ──────────────
     if (!spawnPos) {
       spawnPos  = { x: h.x, z: h.z };
-      spawnEyeY = h.y;                    // 눈높이 저장
-      mirrorZ   = h.z - MIRROR_DIST;      // 사용자 앞 1.5m = 거울
+      spawnEyeY = h.y;
+      mirrorZ   = h.z - MIRROR_DIST;
 
-      // ── 클리핑 플레인 초기화 ──────────────────────────────
-      // dot(normal, p) + constant < 0 이면 그 픽셀은 잘린다(보이지 않음)
-      //   grayClipPlane: clip z > mirrorZ  → n=(0,0,-1), c=mirrorZ
-      //     -pz + mirrorZ < 0  →  pz > mirrorZ  (거울 앞쪽 제거)
-      //   blueClipPlane: clip z < mirrorZ  → n=(0,0,1),  c=-mirrorZ
-      //     pz - mirrorZ < 0   →  pz < mirrorZ  (거울 뒤쪽 제거)
       grayClipPlane = new THREE.Plane(new THREE.Vector3(0, 0, -1),  mirrorZ);
       blueClipPlane = new THREE.Plane(new THREE.Vector3(0, 0,  1), -mirrorZ);
 
@@ -561,25 +621,24 @@ btnStart.onclick = async () => {
       guideGroup.visible = true;
 
       setStatus(
-        `✓ 준비 완료 | 시안색 선 = 거울 위치(앞 ${MIRROR_DIST}m) | 구체 소환 버튼으로 링 연출`
+        `✓ 준비 완료 | 거울 위치(앞 ${MIRROR_DIST}m) | 손 들어보세요 — 거울에 비칩니다`
       );
     }
 
-    // ── 큐브 위치: 머리 위 30cm, 실시간 추적 ─────────────────
-    const cx = h.x;
-    const cy = h.y + HEAD_ABOVE;
-    const cz = h.z;
-
+    // ── 큐브: 머리 위 30cm, 실시간 추적 ─────────────────────
+    const cx = h.x, cy = h.y + HEAD_ABOVE, cz = h.z;
     realCube.position.set(cx, cy, cz);
     realCube.visible = (scenario === 1);
-
-    const mz = reflectZ(cz);
-    mirrorCube.position.set(cx, cy, mz);
+    mirrorCube.position.set(cx, cy, reflectZ(cz));
     mirrorCube.visible = true;
 
-    // ── 구체 업데이트 ─────────────────────────────────────
+    // ── 구체 ──────────────────────────────────────────────────
     updateSphere(timestamp, h.z);
     prevTimestamp = timestamp;
+
+    // ── 거울 손: 두 손 모두 Z 반전 ───────────────────────────
+    updateMirrorHandVis(hand1, mirrorVis1);
+    updateMirrorHandVis(hand2, mirrorVis2);
 
     renderer.render(scene, camera);
   });
