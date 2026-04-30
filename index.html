@@ -289,6 +289,39 @@ scene.add(mirrorVis1.group);
 scene.add(mirrorVis2.group);
 
 // ────────────────────────────────────────────────────────────────
+//  핀치 구체 — 지름 15cm, 노란→초록, 실제+거울 각 2개
+// ────────────────────────────────────────────────────────────────
+const PINCH_SPHERE_R    = 0.075;  // 반지름 7.5cm (지름 15cm)
+const PINCH_THRESHOLD   = 0.02;   // 핀치 판정 거리 (m)
+const PINCH_COL_NORMAL  = new THREE.Color(0xffee00); // 노란색
+const PINCH_COL_ACTIVE  = new THREE.Color(0x00e676); // 초록색
+const PINCH_EMI_NORMAL  = new THREE.Color(0x443300);
+const PINCH_EMI_ACTIVE  = new THREE.Color(0x003311);
+
+function createPinchSphere() {
+  const mat = new THREE.MeshStandardMaterial({
+    color: PINCH_COL_NORMAL.clone(),
+    roughness: 0.15,
+    metalness: 0.25,
+    transparent: true,
+    opacity: 0.88,
+    emissive: PINCH_EMI_NORMAL.clone(),
+    emissiveIntensity: 0.5
+  });
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(PINCH_SPHERE_R, 28, 28), mat);
+  mesh.visible = false;
+  scene.add(mesh);
+  return { mesh, mat };
+}
+
+// 실제 손 핀치 구체 (hand1 / hand2)
+const pinch1 = createPinchSphere();
+const pinch2 = createPinchSphere();
+// 거울 핀치 구체 (Z 반전)
+const mirrorPinch1 = createPinchSphere();
+const mirrorPinch2 = createPinchSphere();
+
+// ────────────────────────────────────────────────────────────────
 //  GLOBAL STATE
 // ────────────────────────────────────────────────────────────────
 let spawnPos       = null;
@@ -498,6 +531,50 @@ function updateHandVis(realHand, vis, invertZ) {
 }
 
 // ────────────────────────────────────────────────────────────────
+//  핀치 감지 & 구체 업데이트
+// ────────────────────────────────────────────────────────────────
+const _indexPos = new THREE.Vector3();
+const _thumbPos = new THREE.Vector3();
+
+function updatePinchSphere(realHand, pinchVis, mirrorPinchVis) {
+  const indexJoint = realHand.joints['index-finger-tip'];
+  const thumbJoint  = realHand.joints['thumb-tip'];
+
+  if (!indexJoint || !thumbJoint || !indexJoint.visible || !thumbJoint.visible) {
+    pinchVis.mesh.visible       = false;
+    mirrorPinchVis.mesh.visible = false;
+    return;
+  }
+
+  indexJoint.getWorldPosition(_indexPos);
+  thumbJoint.getWorldPosition(_thumbPos);
+
+  const isPinching = _indexPos.distanceTo(_thumbPos) < PINCH_THRESHOLD;
+
+  // 색 전환 (스냅)
+  const col = isPinching ? PINCH_COL_ACTIVE : PINCH_COL_NORMAL;
+  const emi = isPinching ? PINCH_EMI_ACTIVE : PINCH_EMI_NORMAL;
+  pinchVis.mat.color.copy(col);
+  pinchVis.mat.emissive.copy(emi);
+  mirrorPinchVis.mat.color.copy(col);
+  mirrorPinchVis.mat.emissive.copy(emi);
+
+  // 중심점 = 두 끝 관절의 중간
+  const mx = (_indexPos.x + _thumbPos.x) * 0.5;
+  const my = (_indexPos.y + _thumbPos.y) * 0.5;
+  const mz = (_indexPos.z + _thumbPos.z) * 0.5;
+
+  pinchVis.mesh.position.set(mx, my, mz);
+  pinchVis.mesh.visible = true;
+
+  // 거울: Z 반전 (spawnPos가 있어야 mirrorZ가 확정됨)
+  if (spawnPos) {
+    mirrorPinchVis.mesh.position.set(mx, my, 2 * mirrorZ - mz);
+    mirrorPinchVis.mesh.visible = true;
+  }
+}
+
+// ────────────────────────────────────────────────────────────────
 //  UI
 // ────────────────────────────────────────────────────────────────
 const statusEl  = document.getElementById('status');
@@ -644,6 +721,10 @@ btnStart.onclick = async () => {
     // ── 거울 손 (Z 반전 파란색) ───────────────────────────────
     updateHandVis(hand1, mirrorVis1, true);
     updateHandVis(hand2, mirrorVis2, true);
+
+    // ── 핀치 구체 (실제 + 거울) ───────────────────────────────
+    updatePinchSphere(hand1, pinch1, mirrorPinch1);
+    updatePinchSphere(hand2, pinch2, mirrorPinch2);
 
     renderer.render(scene, camera);
   });
