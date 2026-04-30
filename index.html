@@ -330,6 +330,9 @@ camera.add(audioListener);
 let bellBuffer = null;
 new THREE.AudioLoader().load('mixkit-achievement-bell-600.wav', buf => { bellBuffer = buf; });
 
+let alertBuffer = null;
+new THREE.AudioLoader().load('mixkit-alert-bells-echo-765.wav', buf => { alertBuffer = buf; });
+
 function createPinchAudio(sourceMesh) {
   const sound = new THREE.PositionalAudio(audioListener);
   sound.setRefDistance(0.3);   // 30cm 기준 거리에서 풀 볼륨
@@ -504,6 +507,51 @@ class HandTrail {
 
 const trail1 = new HandTrail();
 const trail2 = new HandTrail();
+
+// ────────────────────────────────────────────────────────────────
+//  손목 UI 패널 — hand1 손목 위에 10×10cm 플레인, hand2 검지로 터치
+// ────────────────────────────────────────────────────────────────
+const WRIST_PANEL_SIZE   = 0.10;   // 10cm
+const WRIST_PANEL_OFFSET = 0.05;   // 손목 로컬 Y+ 방향으로 5cm
+const WRIST_PRESS_DIST   = 0.025;  // 충돌 판정 수직 거리 (m)
+const WRIST_PRESS_DUR    = 0.3;    // 눌림 색 유지 시간 (초)
+const PANEL_COL_NORMAL   = new THREE.Color(0x888888);
+const PANEL_COL_PRESS    = new THREE.Color(0xff69b4);
+
+function createWristPanel() {
+  const mat = new THREE.MeshStandardMaterial({
+    color: PANEL_COL_NORMAL.clone(),
+    roughness: 0.3,
+    metalness: 0.1,
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0.82
+  });
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(WRIST_PANEL_SIZE, WRIST_PANEL_SIZE),
+    mat
+  );
+  mesh.visible = false;
+
+  const sound = new THREE.PositionalAudio(audioListener);
+  sound.setRefDistance(0.3);
+  sound.setRolloffFactor(2);
+  sound.setMaxDistance(4);
+  mesh.add(sound);
+
+  scene.add(mesh);
+  return { mesh, mat, sound, pressTimer: 0, lastTime: 0 };
+}
+
+const wristPanel      = createWristPanel();  // 실제
+const mirrorWristPanel = createWristPanel(); // 거울 (Z 반전)
+
+// 패널 계산용 벡터
+const _wristOffset = new THREE.Vector3();
+const _panelNormal = new THREE.Vector3();
+const _panelRight  = new THREE.Vector3();
+const _panelUp     = new THREE.Vector3();
+const _tipToPanel  = new THREE.Vector3();
 
 // ────────────────────────────────────────────────────────────────
 //  GLOBAL STATE
@@ -840,6 +888,88 @@ function updatePointerDot(realHand, dot, mirrorDot) {
 }
 
 // ────────────────────────────────────────────────────────────────
+//  손목 패널 업데이트
+//  wristHand: 패널이 붙는 손 / pointerHand: 검지로 터치하는 손
+// ────────────────────────────────────────────────────────────────
+function updateWristPanel(wristHand, pointerHand, panel, mirrorPanel, timestamp) {
+  const dt = panel.lastTime > 0
+    ? Math.min((timestamp - panel.lastTime) / 1000, 0.05) : 0.016;
+  panel.lastTime = timestamp;
+
+  const wrist = wristHand.joints['wrist'];
+  if (!wrist || !wrist.visible) {
+    panel.mesh.visible       = false;
+    mirrorPanel.mesh.visible = false;
+    return;
+  }
+
+  // ── 패널 위치 & 회전: 손목 로컬 Y+ 방향으로 5cm 띄움 ─────
+  wrist.getWorldPosition(_tmpPos);
+  _wristOffset.set(0, WRIST_PANEL_OFFSET, 0).applyQuaternion(wrist.quaternion);
+  panel.mesh.position.copy(_tmpPos).add(_wristOffset);
+  panel.mesh.quaternion.copy(wrist.quaternion);
+  panel.mesh.visible = true;
+
+  // ── 거울 패널: Z 위치 반전 + 회전 Z축 반사 ────────────────
+  if (spawnPos) {
+    const q = wrist.quaternion;
+    mirrorPanel.mesh.position.set(
+      panel.mesh.position.x,
+      panel.mesh.position.y,
+      2 * mirrorZ - panel.mesh.position.z
+    );
+    mirrorPanel.mesh.quaternion.set(q.x, q.y, -q.z, q.w).normalize();
+    mirrorPanel.mesh.visible = true;
+  }
+
+  // ── 다른 손 검지 끝으로 충돌 감지 ─────────────────────────
+  const idxTip = pointerHand.joints['index-finger-tip'];
+  let isPressed = false;
+
+  if (idxTip && idxTip.visible) {
+    idxTip.getWorldPosition(_ptrIndex);
+
+    // 패널 법선 (로컬 Z → 월드)
+    _panelNormal.set(0, 0, 1).applyQuaternion(panel.mesh.quaternion);
+    _tipToPanel.copy(_ptrIndex).sub(panel.mesh.position);
+
+    // 패널 면과의 수직 거리
+    const perpDist = Math.abs(_tipToPanel.dot(_panelNormal));
+
+    if (perpDist < WRIST_PRESS_DIST) {
+      // 패널 내부 여부: 로컬 X/Y 범위 확인
+      const half = WRIST_PANEL_SIZE * 0.5;
+      _panelRight.set(1, 0, 0).applyQuaternion(panel.mesh.quaternion);
+      _panelUp.set(0, 1, 0).applyQuaternion(panel.mesh.quaternion);
+      isPressed = (
+        Math.abs(_tipToPanel.dot(_panelRight)) < half &&
+        Math.abs(_tipToPanel.dot(_panelUp))    < half
+      );
+    }
+  }
+
+  // rising edge → 소리 + 눌림 타이머 시작
+  if (isPressed && panel.pressTimer <= 0) {
+    if (alertBuffer) {
+      if (panel.sound.isPlaying) panel.sound.stop();
+      panel.sound.setBuffer(alertBuffer);
+      panel.sound.play();
+    }
+    panel.pressTimer = WRIST_PRESS_DUR;
+  }
+
+  // 눌림 색 유지 후 원상복귀
+  if (panel.pressTimer > 0) {
+    panel.pressTimer -= dt;
+    panel.mat.color.copy(PANEL_COL_PRESS);
+    mirrorPanel.mat.color.copy(PANEL_COL_PRESS);
+  } else {
+    panel.mat.color.copy(PANEL_COL_NORMAL);
+    mirrorPanel.mat.color.copy(PANEL_COL_NORMAL);
+  }
+}
+
+// ────────────────────────────────────────────────────────────────
 //  UI
 // ────────────────────────────────────────────────────────────────
 const statusEl  = document.getElementById('status');
@@ -996,6 +1126,10 @@ btnStart.onclick = async () => {
     const isPointing2 = updatePointerDot(hand2, ptrDot2, mirrorPtrDot2);
     trail1.update(timestamp, isPointing1, ptrDot1.lazyPos);
     trail2.update(timestamp, isPointing2, ptrDot2.lazyPos);
+
+    // ── 손목 UI 패널 (실제 + 거울) ───────────────────────────
+    // hand1 손목에 패널, hand2 검지로 터치
+    updateWristPanel(hand1, hand2, wristPanel, mirrorWristPanel, timestamp);
 
     renderer.render(scene, camera);
   });
