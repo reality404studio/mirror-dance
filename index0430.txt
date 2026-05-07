@@ -31,8 +31,6 @@
   #btnToggle.off { background: #ff9800; }
   #btnSummon { background: #7b1fa2; color: white; display: none; }
   #btnSummon.active { background: #e91e63; }
-  #btnFish { background: #ff7043; color: white; display: none; }
-  #btnFish.active { background: #e53935; }
 
   #hint {
     position: fixed; top: 50%; left: 50%;
@@ -56,7 +54,6 @@
   <button id="btnStart">AR 시작</button>
   <button id="btnToggle">시나리오 전환</button>
   <button id="btnSummon">구체 소환</button>
-  <button id="btnFish">물고기 소환</button>
 </div>
 
 <script type="importmap">
@@ -83,18 +80,6 @@ const SPHERE_STOP_DIST   = 0.5;
 const SPHERE_HOVER_TIME  = 3.0;
 const SPHERE_RISE_SPEED  = 0.12;
 const SPHERE_FADE_SPEED  = 0.35;
-
-// ── 물고기 파라미터 (조절 변수) ───────────────────────────────
-const FISH_W              = 0.14;   // m — 큐브 너비 (좌우)
-const FISH_H              = 0.06;   // m — 큐브 높이 (상하)
-const FISH_D              = 0.10;   // m — 큐브 깊이 (진행 방향)
-const FISH_APPROACH_SPEED = 0.45;   // m/s — 거울로 다가오는 속도
-const FISH_SPAWN_DIST     = 1.3;    // m — 거울 뒤 생성 거리
-const FISH_CROSS_DUR      = 0.55;   // sec — 거울 통과 연출 시간
-const FISH_DRIFT_Z_MIN    = 0.25;   // m — 거울면 앞 최소 거리
-const FISH_DRIFT_Z_MAX    = 0.35;   // m — 사용자 앞 최소 거리
-const FISH_DRIFT_X_AMP    = 0.38;   // m — 좌우 유영 최대 진폭
-const FISH_DRIFT_Y_AMP    = 0.13;   // m — 상하 유영 최대 진폭
 
 // WebXR hand joint names (spec order, 25 joints)
 const HAND_JOINTS = [
@@ -240,31 +225,6 @@ scene.add(mirrorLight);
 
 let grayClipPlane = null;
 let blueClipPlane = null;
-
-// ────────────────────────────────────────────────────────────────
-//  물고기 큐브 (에셋 교체 전 대역)
-// ────────────────────────────────────────────────────────────────
-const fishGeo = new THREE.BoxGeometry(FISH_W, FISH_H, FISH_D);
-
-const fishMat = new THREE.MeshStandardMaterial({
-  color: 0x00bcd4,
-  roughness: 0.25, metalness: 0.40,
-  transparent: true, opacity: 1,
-  emissive: new THREE.Color(0x003344), emissiveIntensity: 0.4
-});
-const fishReal = new THREE.Mesh(fishGeo, fishMat);
-fishReal.visible = false;
-scene.add(fishReal);
-
-const fishMirrorMat = new THREE.MeshStandardMaterial({
-  color: 0x4488cc,
-  roughness: 0.25, metalness: 0.40,
-  transparent: true, opacity: 0.72,
-  emissive: new THREE.Color(0x001133), emissiveIntensity: 0.4
-});
-const fishMirrorMesh = new THREE.Mesh(fishGeo, fishMirrorMat);
-fishMirrorMesh.visible = false;
-scene.add(fishMirrorMesh);
 
 // ────────────────────────────────────────────────────────────────
 //  HAND TRACKING — XR 손 공간 (조인트 데이터 소스)
@@ -612,145 +572,10 @@ let prevTimestamp   = 0;
 let mirrorEffectTimer = -1;
 let mirrorTouched     = false;
 
-// 물고기 상태
-let fishPhase          = 'idle'; // 'idle'|'approach'|'crossing'|'drift'
-let fishX              = 0;
-let fishY              = 0;
-let fishZ              = 0;
-let fishCrossTimer     = 0;
-let fishCrossTriggered = false;
-let fishDriftTime      = 0;
-let fishPhaseX         = 0;
-let fishPhaseY         = 0;
-let fishPhaseZ         = 0;
-
 // ────────────────────────────────────────────────────────────────
 //  HELPER
 // ────────────────────────────────────────────────────────────────
 function reflectZ(z) { return 2 * mirrorZ - z; }
-
-// ── 물고기 ───────────────────────────────────────────────────────
-function resetFish() {
-  fishPhase = 'idle';
-  fishReal.visible = false;
-  fishMirrorMesh.visible = false;
-}
-
-function spawnFish() {
-  fishX              = spawnPos.x + (Math.random() - 0.5) * 0.5;
-  fishY              = spawnEyeY - 0.15;
-  fishZ              = mirrorZ - FISH_SPAWN_DIST;
-  fishPhase          = 'approach';
-  fishCrossTimer     = 0;
-  fishCrossTriggered = false;
-  fishDriftTime      = 0;
-  fishPhaseX         = Math.random() * Math.PI * 2;
-  fishPhaseY         = Math.random() * Math.PI * 2;
-  fishPhaseZ         = Math.random() * Math.PI * 2;
-  fishMat.color.set(0x00bcd4);
-  fishMat.emissive.set(0x003344);
-  fishMat.emissiveIntensity = 0.4;
-  fishMat.opacity = 1;
-  fishMirrorMesh.visible = false;
-}
-
-function updateFish(timestamp, userZ, dt) {
-  if (fishPhase === 'idle' || !spawnPos) {
-    fishReal.visible = false;
-    fishMirrorMesh.visible = false;
-    return;
-  }
-
-  if (fishPhase === 'approach') {
-    fishZ += FISH_APPROACH_SPEED * dt;
-    const bob  = Math.sin(timestamp * 0.0030) * 0.018;
-    const sway = Math.sin(timestamp * 0.0015) * 0.010;
-    fishReal.position.set(fishX + sway, fishY + bob, fishZ);
-    fishReal.rotation.set(0, Math.sin(timestamp * 0.0012) * 0.12, 0);
-    fishReal.visible = true;
-    fishMirrorMesh.visible = false;
-
-    if (fishZ >= mirrorZ) {
-      fishPhase = 'crossing';
-      fishCrossTimer = 0;
-      fishCrossTriggered = false;
-    }
-    return;
-  }
-
-  if (fishPhase === 'crossing') {
-    fishCrossTimer += dt;
-    fishZ += FISH_APPROACH_SPEED * dt;
-
-    if (!fishCrossTriggered) {
-      fishCrossTriggered = true;
-      triggerMirrorEffect(fishX, fishY, mirrorZ);
-    }
-
-    // 포털 통과 느낌: emissive 플래시 + opacity 맥동
-    const crossT = Math.min(fishCrossTimer / FISH_CROSS_DUR, 1);
-    const flash  = Math.sin(crossT * Math.PI);
-    fishMat.emissiveIntensity = 0.4 + flash * 1.8;
-    fishMat.opacity = 0.55 + flash * 0.25 + (1 - flash) * 0.2;
-
-    const bob = Math.sin(timestamp * 0.003) * 0.018;
-    fishReal.position.set(fishX, fishY + bob, fishZ);
-    fishReal.rotation.set(0, 0, 0);
-    fishReal.visible = true;
-    fishMirrorMesh.visible = false;
-
-    if (fishCrossTimer >= FISH_CROSS_DUR) {
-      fishPhase = 'drift';
-      fishMat.color.set(0xff8c42);
-      fishMat.emissive.set(0x331100);
-      fishMat.emissiveIntensity = 0.4;
-      fishMat.opacity = 1;
-    }
-    return;
-  }
-
-  if (fishPhase === 'drift') {
-    fishDriftTime += dt;
-    const t = fishDriftTime;
-
-    // 다중 사인파 합성 → 비주기적 유영
-    const wx = Math.sin(t * 0.61 + fishPhaseX) * FISH_DRIFT_X_AMP
-             + Math.sin(t * 1.43 + fishPhaseX * 0.8) * FISH_DRIFT_X_AMP * 0.28;
-    const wy = Math.sin(t * 0.47 + fishPhaseY) * FISH_DRIFT_Y_AMP
-             + Math.sin(t * 1.13 + fishPhaseY * 1.3) * FISH_DRIFT_Y_AMP * 0.22;
-
-    // z: 거울~사용자 사이 공간을 사인파로 왕복
-    const zRange = Math.max(0, (userZ - mirrorZ) - FISH_DRIFT_Z_MIN - FISH_DRIFT_Z_MAX);
-    const zNorm  = 0.5 + 0.5 * Math.sin(t * 0.38 + fishPhaseZ);
-    const wz = mirrorZ + FISH_DRIFT_Z_MIN + zRange * zNorm;
-
-    fishX = spawnPos.x + wx;
-    fishY = spawnEyeY - 0.15 + wy;
-    fishZ = wz;
-
-    // x 속도 → y축 회전(방향 전환), y 속도 → x축 기울기, 뱅킹
-    const vx = Math.cos(t * 0.61 + fishPhaseX) * FISH_DRIFT_X_AMP * 0.61
-             + Math.cos(t * 1.43 + fishPhaseX * 0.8) * FISH_DRIFT_X_AMP * 0.28 * 1.43;
-    const vy = Math.cos(t * 0.47 + fishPhaseY) * FISH_DRIFT_Y_AMP * 0.47;
-
-    fishReal.position.set(fishX, fishY, fishZ);
-    fishReal.rotation.set(
-      vy * 1.4,
-      Math.atan2(-vx, 0.28) * 0.55,
-      vx * 0.75
-    );
-    fishReal.visible = true;
-
-    // 거울 복제: Z 반전, X·Y 회전 반전 (Z 미러 수학)
-    fishMirrorMesh.position.set(fishX, fishY, reflectZ(fishZ));
-    fishMirrorMesh.rotation.set(
-      -fishReal.rotation.x,
-      -fishReal.rotation.y,
-       fishReal.rotation.z
-    );
-    fishMirrorMesh.visible = true;
-  }
-}
 
 function resetSphereVisuals() {
   graySphere.visible = false;
@@ -889,6 +714,8 @@ function updateSphere(timestamp, userZ) {
       triggerMirrorEffect(posX, posY, mirrorZ);
     }
   }
+
+  updateMirrorEffect(dt);
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -1148,7 +975,6 @@ function updateWristPanel(wristHand, pointerHand, panel, mirrorPanel, timestamp)
 const statusEl  = document.getElementById('status');
 const toggleBtn = document.getElementById('btnToggle');
 const btnSummon = document.getElementById('btnSummon');
-const btnFish   = document.getElementById('btnFish');
 
 function setStatus(text) { statusEl.textContent = text; }
 
@@ -1179,19 +1005,6 @@ btnSummon.onclick = () => {
   btnSummon.classList.add('active');
 };
 
-btnFish.onclick = () => {
-  if (!spawnPos) return;
-  if (fishPhase !== 'idle') {
-    resetFish();
-    btnFish.textContent = '물고기 소환';
-    btnFish.classList.remove('active');
-    return;
-  }
-  spawnFish();
-  btnFish.textContent = '소환 취소';
-  btnFish.classList.add('active');
-};
-
 // ────────────────────────────────────────────────────────────────
 //  AR SESSION
 // ────────────────────────────────────────────────────────────────
@@ -1204,7 +1017,6 @@ function enterSessionUI(session) {
   document.getElementById('hint').style.display = 'none';
   toggleBtn.style.display = 'inline-block';
   btnSummon.style.display = 'inline-block';
-  btnFish.style.display   = 'inline-block';
 }
 
 function exitSessionUI() {
@@ -1215,14 +1027,10 @@ function exitSessionUI() {
   btnSummon.style.display = 'none';
   btnSummon.textContent = '구체 소환';
   btnSummon.classList.remove('active');
-  btnFish.style.display = 'none';
-  btnFish.textContent = '물고기 소환';
-  btnFish.classList.remove('active');
   spawnPos = null;
   guideGroup.visible = false;
   spherePhase = 'idle';
   resetSphereVisuals();
-  resetFish();
   setStatus('세션 종료됨');
   renderer.setAnimationLoop(null);
 }
@@ -1297,24 +1105,8 @@ btnStart.onclick = async () => {
     mirrorCube.position.set(cx, cy, reflectZ(cz));
     mirrorCube.visible = true;
 
-    // ── 프레임 dt (루프 레벨 1회 계산) ───────────────────────────
-    const dt = prevTimestamp > 0
-      ? Math.min((timestamp - prevTimestamp) / 1000, 0.05)
-      : 0.016;
-
     // ── 구체 ──────────────────────────────────────────────────
     updateSphere(timestamp, h.z);
-
-    // ── 거울 이펙트 (구체·물고기 공용, 프레임당 1회) ──────────
-    updateMirrorEffect(dt);
-
-    // ── 물고기 ─────────────────────────────────────────────────
-    updateFish(timestamp, h.z, dt);
-    if (fishPhase === 'idle' && btnFish.classList.contains('active')) {
-      btnFish.textContent = '물고기 소환';
-      btnFish.classList.remove('active');
-    }
-
     prevTimestamp = timestamp;
 
     // ── 실제 손 (패스스루 위 크림색) ─────────────────────────
