@@ -93,9 +93,33 @@ input[type=range] { flex: 1; accent-color: #ff5722; cursor: pointer; }
 
 <!-- ── Voice State ───────────────────────────────── -->
 <section>
-  <div class="lbl">현재 목소리 상태</div>
+  <div class="lbl">현재 목소리 상태 (유지 적용)</div>
   <div class="state-box" id="stateBox" style="background:#111;color:#2a2a2a">SILENCE</div>
-  <div style="font-size:11px;color:#444;margin-top:6px;text-align:center">
+
+  <!-- hold 중일 때만 보이는 카운트다운 바 -->
+  <div id="holdWrap" style="display:none; margin-top:8px">
+    <div class="lbl">호흡 감지 — 유지 카운트다운</div>
+    <div class="m-wrap" style="height:18px">
+      <div class="m-fill" id="holdBar" style="background:#ff5722;opacity:0.55"></div>
+    </div>
+  </div>
+
+  <!-- raw 상태 (hold 없는 순간 값) -->
+  <div style="margin-top:8px;display:flex;align-items:center;gap:8px">
+    <span style="font-size:10px;color:#444;white-space:nowrap">RAW →</span>
+    <span id="rawState" style="font-size:12px;color:#555;font-weight:bold;letter-spacing:0.08em">SILENCE</span>
+  </div>
+
+  <!-- hold time 슬라이더 -->
+  <div class="sl-row" style="margin-top:10px">
+    <span style="font-size:11px;color:#666;width:80px">HOLD TIME</span>
+    <input type="range" id="holdSlider" min="3" max="60" value="20">
+    <span id="holdLbl" style="width:44px;color:#ff9800;font-weight:bold;font-size:14px">2.0s</span>
+  </div>
+  <div style="font-size:10px;color:#444;margin-top:3px">
+    ← 호흡으로 끊겨도 이 시간 동안 상태 유지
+  </div>
+  <div style="font-size:11px;color:#444;margin-top:8px;text-align:right">
     상태 지속: <span id="stateDur">0.0s</span>
   </div>
 </section>
@@ -119,8 +143,8 @@ input[type=range] { flex: 1; accent-color: #ff5722; cursor: pointer; }
 
   <div class="sl-row">
     <span style="font-size:11px;color:#666;width:80px">THRESHOLD</span>
-    <input type="range" id="thSlider" min="1" max="80" value="25">
-    <span id="thLbl" style="width:44px;color:#ff5722;font-weight:bold;font-size:14px">0.25</span>
+    <input type="range" id="thSlider" min="1" max="80" value="2">
+    <span id="thLbl" style="width:44px;color:#ff5722;font-weight:bold;font-size:14px">0.02</span>
   </div>
   <div style="font-size:10px;color:#444;margin-top:4px">
     ← 이 선 위 = CALL 상태 진입 기준
@@ -171,7 +195,7 @@ input[type=range] { flex: 1; accent-color: #ff5722; cursor: pointer; }
     순간 RMS:    <b id="nRaw">0.0000</b><br>
     스무딩 RMS:  <b id="nSmooth">0.0000</b><br>
     피크 RMS:    <b id="nPeak">0.0000</b><br>
-    임계값:      <b id="nThresh" style="color:#ff5722">0.2500</b>
+    임계값:      <b id="nThresh" style="color:#ff5722">0.0200</b>
   </div>
 </section>
 
@@ -201,9 +225,15 @@ let audioCtx, analyser, bufTime, bufFreq;
 let running  = false;
 let smoothed = 0;
 let peak     = 0;
-let thresh   = 0.25;
-let prevState = '';
-let stateStart = 0;
+let thresh   = 0.02;
+let holdTime = 2.0;   // 상태 유지 시간 (초)
+
+const STATE_LEVEL = { silence: 0, whisper: 1, call: 2, sing: 3 };
+let heldState  = 'silence';  // 유지 로직이 적용된 현재 상태
+let rawState   = 'silence';  // 유지 없는 순간 상태
+let holdTimer  = 0;          // 하강 유지 경과 시간
+let stateStart = 0;          // heldState 마지막 변경 시각
+let prevTime   = 0;          // dt 계산용
 
 // ── Spectrum bars ──────────────────────────────────────────────
 const specEl = document.getElementById('spectrum');
@@ -217,9 +247,14 @@ const sBars  = Array.from({ length: SPEC_N }, () => {
 // ── Threshold slider ───────────────────────────────────────────
 document.getElementById('thSlider').addEventListener('input', e => {
   thresh = e.target.value / 100;
-  document.getElementById('thLbl').textContent    = thresh.toFixed(2);
-  document.getElementById('nThresh').textContent  = thresh.toFixed(4);
+  document.getElementById('thLbl').textContent   = thresh.toFixed(2);
+  document.getElementById('nThresh').textContent = thresh.toFixed(4);
   placeThreshLines();
+});
+
+document.getElementById('holdSlider').addEventListener('input', e => {
+  holdTime = e.target.value / 10;
+  document.getElementById('holdLbl').textContent = holdTime.toFixed(1) + 's';
 });
 
 function placeThreshLines() {
@@ -349,16 +384,53 @@ function loop() {
   const bP = bandLevel(bufFreq, 1000, 4000);
   const bH = bandLevel(bufFreq, 4000, 8000);
 
-  // State
-  const state = calcState(smoothed);
-  if (state !== prevState) { stateStart = performance.now(); prevState = state; }
-  const dur = (performance.now() - stateStart) / 1000;
+  // ── State with hold logic ─────────────────────────────────────
+  const now = performance.now();
+  const dt  = prevTime > 0 ? Math.min((now - prevTime) / 1000, 0.1) : 0.016;
+  prevTime  = now;
 
-  const cfg    = STATE_CFG[state];
-  const sBox   = document.getElementById('stateBox');
-  sBox.textContent      = cfg.label;
+  rawState = calcState(smoothed);
+
+  const rawLvl  = STATE_LEVEL[rawState];
+  const heldLvl = STATE_LEVEL[heldState];
+
+  if (rawLvl >= heldLvl) {
+    // 올라가거나 유지: 즉시 적용, hold 타이머 리셋
+    if (rawState !== heldState) { stateStart = now; heldState = rawState; }
+    holdTimer = 0;
+  } else {
+    // 내려가려는 중: holdTime 초만큼 버팀
+    holdTimer += dt;
+    if (holdTimer >= holdTime) {
+      stateStart = now; heldState = rawState; holdTimer = 0;
+    }
+  }
+
+  const dur       = (now - stateStart) / 1000;
+  const isHolding = holdTimer > 0;
+
+  // 상태 박스 업데이트
+  const cfg  = STATE_CFG[heldState];
+  const sBox = document.getElementById('stateBox');
+  sBox.textContent      = cfg.label + (isHolding ? ' ⏳' : '');
   sBox.style.background = cfg.bg;
   sBox.style.color      = cfg.fg;
+
+  // raw 상태 표시
+  const rawCfg = STATE_CFG[rawState];
+  document.getElementById('rawState').textContent = rawCfg.label;
+  document.getElementById('rawState').style.color = rawCfg.fg;
+
+  // hold 카운트다운 바
+  const holdWrap = document.getElementById('holdWrap');
+  if (isHolding) {
+    holdWrap.style.display = 'block';
+    document.getElementById('holdBar').style.width =
+      Math.min(holdTimer / holdTime * 100, 100) + '%';
+  } else {
+    holdWrap.style.display = 'none';
+  }
+
   document.getElementById('stateDur').textContent = dur.toFixed(1) + 's';
 
   // Meters
