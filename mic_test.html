@@ -117,7 +117,17 @@ input[type=range] { flex: 1; accent-color: #ff5722; cursor: pointer; }
     <span id="holdLbl" style="width:44px;color:#ff9800;font-weight:bold;font-size:14px">2.0s</span>
   </div>
   <div style="font-size:10px;color:#444;margin-top:3px">
-    ← 호흡으로 끊겨도 이 시간 동안 상태 유지
+    ← 완전히 멈췄을 때 이 시간 후 상태 내려감
+  </div>
+
+  <!-- hysteresis 슬라이더 -->
+  <div class="sl-row" style="margin-top:8px">
+    <span style="font-size:11px;color:#666;width:80px">HYSTERESIS</span>
+    <input type="range" id="hystSlider" min="10" max="80" value="40">
+    <span id="hystLbl" style="width:44px;color:#80cbc4;font-weight:bold;font-size:14px">0.40</span>
+  </div>
+  <div style="font-size:10px;color:#444;margin-top:3px">
+    ← 탈출 threshold = 진입 × HYST. 높을수록 쉽게 내려감
   </div>
   <div style="font-size:11px;color:#444;margin-top:8px;text-align:right">
     상태 지속: <span id="stateDur">0.0s</span>
@@ -225,8 +235,9 @@ let audioCtx, analyser, bufTime, bufFreq;
 let running  = false;
 let smoothed = 0;
 let peak     = 0;
-let thresh   = 0.02;
-let holdTime = 2.0;   // 상태 유지 시간 (초)
+let thresh      = 0.02;
+let holdTime    = 2.0;   // 상태 유지 시간 (초)
+let hysteresis  = 0.40;  // 탈출 threshold = 진입 threshold × hysteresis
 
 const STATE_LEVEL = { silence: 0, whisper: 1, call: 2, sing: 3 };
 let heldState  = 'silence';  // 유지 로직이 적용된 현재 상태
@@ -255,6 +266,11 @@ document.getElementById('thSlider').addEventListener('input', e => {
 document.getElementById('holdSlider').addEventListener('input', e => {
   holdTime = e.target.value / 10;
   document.getElementById('holdLbl').textContent = holdTime.toFixed(1) + 's';
+});
+
+document.getElementById('hystSlider').addEventListener('input', e => {
+  hysteresis = e.target.value / 100;
+  document.getElementById('hystLbl').textContent = hysteresis.toFixed(2);
 });
 
 function placeThreshLines() {
@@ -338,16 +354,31 @@ function bandLevel(freqBuf, fLow, fHigh) {
   return n > 0 ? s / n / 255 : 0;
 }
 
-// 상태 경계: threshold 슬라이더를 CALL 진입점으로 삼고 나머지는 비율로 계산
-// SILENCE  < thresh × 0.15
-// WHISPER  < thresh × 0.70
-// CALL     < thresh × 2.50
-// SING    >= thresh × 2.50
+// 상태 경계 (진입 threshold, 교정값 기준)
+// thresh = 0.02 기준:
+//   SILENCE  < 0.003   (thresh × 0.15)
+//   WHISPER  < 0.013   (thresh × 0.63)  ← 조용히 말할 때 수준
+//   CALL     < 0.018   (thresh × 0.88)  ← 보통 말할 때 수준
+//   SING    >= 0.018                     ← 노래할 때 수준
+const T_SIL  = () => thresh * 0.15;
+const T_WHIS = () => thresh * 0.63;
+const T_CALL = () => thresh * 0.88;
+
 function calcState(v) {
-  if (v < thresh * 0.15) return 'silence';
-  if (v < thresh * 0.70) return 'whisper';
-  if (v < thresh * 2.50) return 'call';
-  return 'sing';
+  if (v >= T_CALL()) return 'sing';
+  if (v >= T_WHIS()) return 'call';
+  if (v >= T_SIL())  return 'whisper';
+  return 'silence';
+}
+
+// 히스테리시스: 지속음이 경계 근처에서 흔들릴 때 hold 타이머를 시작하지 않기 위해
+// "아직 탈출 threshold 위에 있으면 = 흔들림일 뿐, 무시" 판정
+function aboveExitThresh(v, held) {
+  const H = hysteresis;
+  if (held === 'sing')    return v >= T_CALL() * H;
+  if (held === 'call')    return v >= T_WHIS() * H;
+  if (held === 'whisper') return v >= T_SIL()  * H;
+  return false;
 }
 
 const STATE_CFG = {
@@ -398,8 +429,13 @@ function loop() {
     // 올라가거나 유지: 즉시 적용, hold 타이머 리셋
     if (rawState !== heldState) { stateStart = now; heldState = rawState; }
     holdTimer = 0;
+  } else if (aboveExitThresh(smoothed, heldState)) {
+    // 히스테리시스 구간: 진입 threshold 아래지만 탈출 threshold 위
+    // → 지속음의 자연스러운 흔들림. hold 타이머 시작 안 함
+    holdTimer = 0;
   } else {
-    // 내려가려는 중: holdTime 초만큼 버팀
+    // 탈출 threshold 아래까지 완전히 내려옴 (진짜 침묵 / 진짜 호흡)
+    // → hold 타이머 카운트
     holdTimer += dt;
     if (holdTimer >= holdTime) {
       stateStart = now; heldState = rawState; holdTimer = 0;
