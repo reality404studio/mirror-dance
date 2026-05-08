@@ -123,8 +123,8 @@ input[type=range] { flex: 1; accent-color: #ff5722; cursor: pointer; }
   <!-- hysteresis 슬라이더 -->
   <div class="sl-row" style="margin-top:8px">
     <span style="font-size:11px;color:#666;width:80px">HYSTERESIS</span>
-    <input type="range" id="hystSlider" min="10" max="80" value="40">
-    <span id="hystLbl" style="width:44px;color:#80cbc4;font-weight:bold;font-size:14px">0.40</span>
+    <input type="range" id="hystSlider" min="10" max="80" value="25">
+    <span id="hystLbl" style="width:44px;color:#80cbc4;font-weight:bold;font-size:14px">0.25</span>
   </div>
   <div style="font-size:10px;color:#444;margin-top:3px">
     ← 탈출 threshold = 진입 × HYST. 높을수록 쉽게 내려감
@@ -237,7 +237,7 @@ let smoothed = 0;
 let peak     = 0;
 let thresh      = 0.02;
 let holdTime    = 2.0;   // 상태 유지 시간 (초)
-let hysteresis  = 0.40;  // 탈출 threshold = 진입 threshold × hysteresis
+let hysteresis  = 0.25;  // 탈출 threshold = 진입 threshold × hysteresis
 
 const STATE_LEVEL = { silence: 0, whisper: 1, call: 2, sing: 3 };
 let heldState  = 'silence';  // 유지 로직이 적용된 현재 상태
