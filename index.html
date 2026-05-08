@@ -119,6 +119,13 @@ const FISH_SPRING_D  = 0.88;   // 감쇠 (낮을수록 오버슈트 많음)
 const FISH_CALL_DIST = 0.50;   // CALL 상태: 사용자 앞 거리 (m)
 const FISH_ORBIT_R   = 0.40;   // SING 상태: 선회 반지름 (m)
 
+// ── 파티클 스파클 ─────────────────────────────────────────────
+const PART_PER_PINCH = 14;     // 핀치 1회당 파티클 수
+const PART_MAX       = 300;    // 최대 파티클 수
+const PART_GRAVITY   = -3.5;   // m/s²
+const PART_FLOOR_Y   = 0.015;  // 바닥 높이 (m)
+const PART_REST_TIME = 90;     // 바닥 유지 시간 (초)
+
 // WebXR hand joint names (spec order, 25 joints)
 const HAND_JOINTS = [
   'wrist',
@@ -408,11 +415,6 @@ scene.add(mirrorVis2.group);
 //  핀치 — 파티클 스파클 (구체 대체)
 // ────────────────────────────────────────────────────────────────
 const PINCH_THRESHOLD  = 0.02;   // 핀치 판정 거리 (m)
-const PART_PER_PINCH   = 14;     // 핀치 1회당 파티클 수
-const PART_MAX         = 300;    // 최대 파티클 수
-const PART_GRAVITY     = -3.5;   // m/s²
-const PART_FLOOR_Y     = 0.015;  // 바닥 높이 (m)
-const PART_REST_TIME   = 90;     // 바닥에 머무는 시간 (초)
 
 // 파티클 오디오 연결용 (invisible Object3D)
 const pinchObj1 = new THREE.Object3D(); scene.add(pinchObj1);
