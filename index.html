@@ -261,6 +261,59 @@ scene.add(flashMesh);
 const mirrorLight = new THREE.PointLight(0x4fc3f7, 0, 4);
 scene.add(mirrorLight);
 
+// ────────────────────────────────────────────────────────────────
+//  파티클 스파클 시스템 (실제 + 거울)
+// ────────────────────────────────────────────────────────────────
+const _pPos  = new Float32Array(PART_MAX * 3);
+const _pPosM = new Float32Array(PART_MAX * 3);
+const _pSz   = new Float32Array(PART_MAX);
+const _pAlp  = new Float32Array(PART_MAX);
+
+const _partGeo = new THREE.BufferGeometry();
+_partGeo.setAttribute('position', new THREE.BufferAttribute(_pPos,  3));
+_partGeo.setAttribute('pSize',    new THREE.BufferAttribute(_pSz,   1));
+_partGeo.setAttribute('pAlpha',   new THREE.BufferAttribute(_pAlp,  1));
+_partGeo.setDrawRange(0, 0);
+
+const _partGeoM = new THREE.BufferGeometry();
+_partGeoM.setAttribute('position', new THREE.BufferAttribute(_pPosM, 3));
+_partGeoM.setAttribute('pSize',    new THREE.BufferAttribute(_pSz,   1));
+_partGeoM.setAttribute('pAlpha',   new THREE.BufferAttribute(_pAlp,  1));
+_partGeoM.setDrawRange(0, 0);
+
+const _partMat = new THREE.ShaderMaterial({
+  vertexShader: `
+    attribute float pSize;
+    attribute float pAlpha;
+    varying float vAlpha;
+    void main() {
+      vAlpha = pAlpha;
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      gl_PointSize = pSize * (180.0 / -mv.z);
+      gl_Position  = projectionMatrix * mv;
+    }
+  `,
+  fragmentShader: `
+    varying float vAlpha;
+    void main() {
+      vec2 uv = gl_PointCoord - 0.5;
+      float r  = dot(uv, uv) * 4.0;
+      if (r > 1.0) discard;
+      float glow = 1.0 - smoothstep(0.0, 1.0, r);
+      vec3  col  = mix(vec3(1.0, 0.92, 0.55), vec3(1.0), 1.0 - r);
+      gl_FragColor = vec4(col, vAlpha * glow);
+    }
+  `,
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
+});
+
+const partMesh  = new THREE.Points(_partGeo,  _partMat);
+const partMeshM = new THREE.Points(_partGeoM, _partMat);
+partMesh.frustumCulled  = false; partMesh.visible  = false; scene.add(partMesh);
+partMeshM.frustumCulled = false; partMeshM.visible = false; scene.add(partMeshM);
+
+let particles = [];  // { x,y,z, vx,vy,vz, state, age, flyTime, size }
+
 let grayClipPlane = null;
 let blueClipPlane = null;
 
@@ -352,40 +405,21 @@ scene.add(mirrorVis1.group);
 scene.add(mirrorVis2.group);
 
 // ────────────────────────────────────────────────────────────────
-//  핀치 구체 — 지름 15cm, 노란→초록, 실제+거울 각 2개
+//  핀치 — 파티클 스파클 (구체 대체)
 // ────────────────────────────────────────────────────────────────
-const PINCH_SPHERE_R    = 0.075;  // 반지름 7.5cm (지름 15cm)
-const PINCH_THRESHOLD   = 0.02;   // 핀치 판정 거리 (m)
-const PINCH_COL_NORMAL  = new THREE.Color(0xffee00); // 노란색
-const PINCH_COL_ACTIVE  = new THREE.Color(0x00e676); // 초록색
-const PINCH_EMI_NORMAL  = new THREE.Color(0x443300);
-const PINCH_EMI_ACTIVE  = new THREE.Color(0x003311);
+const PINCH_THRESHOLD  = 0.02;   // 핀치 판정 거리 (m)
+const PART_PER_PINCH   = 14;     // 핀치 1회당 파티클 수
+const PART_MAX         = 300;    // 최대 파티클 수
+const PART_GRAVITY     = -3.5;   // m/s²
+const PART_FLOOR_Y     = 0.015;  // 바닥 높이 (m)
+const PART_REST_TIME   = 90;     // 바닥에 머무는 시간 (초)
 
-function createPinchSphere() {
-  const mat = new THREE.MeshStandardMaterial({
-    color: PINCH_COL_NORMAL.clone(),
-    roughness: 0.15,
-    metalness: 0.25,
-    transparent: true,
-    opacity: 0.88,
-    emissive: PINCH_EMI_NORMAL.clone(),
-    emissiveIntensity: 0.5
-  });
-  const mesh = new THREE.Mesh(new THREE.SphereGeometry(PINCH_SPHERE_R, 28, 28), mat);
-  mesh.visible = false;
-  scene.add(mesh);
-  return { mesh, mat };
-}
-
-// 실제 손 핀치 구체 (hand1 / hand2)
-const pinch1 = createPinchSphere();
-const pinch2 = createPinchSphere();
-// 거울 핀치 구체 (Z 반전)
-const mirrorPinch1 = createPinchSphere();
-const mirrorPinch2 = createPinchSphere();
+// 파티클 오디오 연결용 (invisible Object3D)
+const pinchObj1 = new THREE.Object3D(); scene.add(pinchObj1);
+const pinchObj2 = new THREE.Object3D(); scene.add(pinchObj2);
 
 // ────────────────────────────────────────────────────────────────
-//  공간 음향 — PositionalAudio, 핀치 구체 위치에서 방사
+//  공간 음향 — PositionalAudio, 핀치 위치에서 방사
 // ────────────────────────────────────────────────────────────────
 const audioListener = new THREE.AudioListener();
 camera.add(audioListener);
@@ -396,17 +430,17 @@ new THREE.AudioLoader().load('mixkit-achievement-bell-600.wav', buf => { bellBuf
 let alertBuffer = null;
 new THREE.AudioLoader().load('mixkit-alert-bells-echo-765.wav', buf => { alertBuffer = buf; });
 
-function createPinchAudio(sourceMesh) {
+function createPinchAudio(obj) {
   const sound = new THREE.PositionalAudio(audioListener);
-  sound.setRefDistance(0.3);   // 30cm 기준 거리에서 풀 볼륨
+  sound.setRefDistance(0.3);
   sound.setRolloffFactor(2);
   sound.setMaxDistance(6);
-  sourceMesh.add(sound);       // 구체 위치에 붙임 → 머리 방향 따라 좌우 분리
+  obj.add(sound);
   return sound;
 }
 
-const pinchAudio1 = createPinchAudio(pinch1.mesh);
-const pinchAudio2 = createPinchAudio(pinch2.mesh);
+const pinchAudio1 = createPinchAudio(pinchObj1);
+const pinchAudio2 = createPinchAudio(pinchObj2);
 
 // 핀치 이전 상태 (rising edge 감지용)
 let wasPinching1 = false;
@@ -1115,13 +1149,90 @@ function updateHandVis(realHand, vis, invertZ) {
 const _indexPos = new THREE.Vector3();
 const _thumbPos = new THREE.Vector3();
 
-function updatePinchSphere(realHand, pinchVis, mirrorPinchVis, pinchAudio, wasPinching) {
+// ── 파티클 방출 ───────────────────────────────────────────────
+function emitParticles(x, y, z) {
+  for (let i = 0; i < PART_PER_PINCH; i++) {
+    if (particles.length >= PART_MAX) break;
+    const angle = Math.random() * Math.PI * 2;
+    const horiz = 0.25 + Math.random() * 0.55;
+    const up    = 0.35 + Math.random() * 0.80;
+    particles.push({
+      x, y, z,
+      vx: Math.cos(angle) * horiz,
+      vy: up,
+      vz: Math.sin(angle) * horiz,
+      state: 'flying', age: 0, flyTime: 0,
+      size: 0.016 + Math.random() * 0.022
+    });
+  }
+}
+
+// ── 파티클 갱신 ───────────────────────────────────────────────
+function updateParticles(dt) {
+  particles = particles.filter(p =>
+    p.state === 'flying'
+      ? p.age < 20
+      : (p.age - p.flyTime) < PART_REST_TIME
+  );
+
+  const count = Math.min(particles.length, PART_MAX);
+  for (let i = 0; i < count; i++) {
+    const p = particles[i];
+    p.age += dt;
+
+    if (p.state === 'flying') {
+      p.vy += PART_GRAVITY * dt;
+      p.x  += p.vx * dt;
+      p.y  += p.vy * dt;
+      p.z  += p.vz * dt;
+      if (p.y <= PART_FLOOR_Y) {
+        p.y = PART_FLOOR_Y;
+        p.vx = 0; p.vy = 0; p.vz = 0;
+        p.state = 'resting'; p.flyTime = p.age;
+      }
+    }
+
+    // 알파: 비행 중 밝음, 바닥에선 마지막 10초만 페이드
+    let alpha;
+    if (p.state === 'flying') {
+      alpha = 1.0;
+    } else {
+      const restAge   = p.age - p.flyTime;
+      const fadeStart = Math.max(0, PART_REST_TIME - 10);
+      alpha = restAge < fadeStart
+        ? 0.80
+        : (1.0 - (restAge - fadeStart) / 10) * 0.80;
+    }
+
+    const b = i * 3;
+    _pPos[b]  = p.x; _pPos[b+1]  = p.y; _pPos[b+2]  = p.z;
+    _pAlp[i]  = Math.max(0, alpha);
+    _pSz[i]   = p.size;
+
+    if (spawnPos) {
+      _pPosM[b] = p.x; _pPosM[b+1] = p.y; _pPosM[b+2] = reflectZ(p.z);
+    }
+  }
+
+  _partGeo.setDrawRange(0, count);
+  _partGeoM.setDrawRange(0, spawnPos ? count : 0);
+  if (count > 0) {
+    _partGeo.attributes.position.needsUpdate = true;
+    _partGeo.attributes.pAlpha.needsUpdate   = true;
+    _partGeo.attributes.pSize.needsUpdate    = true;
+    _partGeoM.attributes.position.needsUpdate = true;
+    // pAlpha / pSize shared → one update covers both
+  }
+  partMesh.visible  = count > 0;
+  partMeshM.visible = count > 0 && !!spawnPos;
+}
+
+// ── 핀치 감지 (사운드 + 파티클) ──────────────────────────────
+function updatePinch(realHand, pinchObj, pinchAudio, wasPinching) {
   const indexJoint = realHand.joints['index-finger-tip'];
   const thumbJoint  = realHand.joints['thumb-tip'];
 
   if (!indexJoint || !thumbJoint || !indexJoint.visible || !thumbJoint.visible) {
-    pinchVis.mesh.visible       = false;
-    mirrorPinchVis.mesh.visible = false;
     return wasPinching;
   }
 
@@ -1130,42 +1241,17 @@ function updatePinchSphere(realHand, pinchVis, mirrorPinchVis, pinchAudio, wasPi
 
   const isPinching = _indexPos.distanceTo(_thumbPos) < PINCH_THRESHOLD;
 
-  // 핀치 시작 순간(rising edge)에만 사운드 1회 재생
-  if (isPinching && !wasPinching && bellBuffer) {
-    if (pinchAudio.isPlaying) pinchAudio.stop();
-    pinchAudio.setBuffer(bellBuffer);
-    pinchAudio.play();
-  }
-
-  // 색 전환 (스냅)
-  const col = isPinching ? PINCH_COL_ACTIVE : PINCH_COL_NORMAL;
-  const emi = isPinching ? PINCH_EMI_ACTIVE : PINCH_EMI_NORMAL;
-  pinchVis.mat.color.copy(col);
-  pinchVis.mat.emissive.copy(emi);
-  mirrorPinchVis.mat.color.copy(col);
-  mirrorPinchVis.mat.emissive.copy(emi);
-
-  // 중심점 = 두 끝 관절의 중간
-  const mx = (_indexPos.x + _thumbPos.x) * 0.5;
-  const my = (_indexPos.y + _thumbPos.y) * 0.5;
-  const mz = (_indexPos.z + _thumbPos.z) * 0.5;
-
-  // 손바닥에서 20cm 띄우기: 손목→중심 방향으로 오프셋
-  const wristJoint = realHand.joints['wrist'];
-  wristJoint.getWorldPosition(_tmpPos);
-  const dx = mx - _tmpPos.x, dy = my - _tmpPos.y, dz = mz - _tmpPos.z;
-  const len = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
-  const ox = mx + (dx / len) * 0.20;
-  const oy = my + (dy / len) * 0.20;
-  const oz = mz + (dz / len) * 0.20;
-
-  pinchVis.mesh.position.set(ox, oy, oz);
-  pinchVis.mesh.visible = true;
-
-  // 거울: Z 반전 (spawnPos가 있어야 mirrorZ가 확정됨)
-  if (spawnPos) {
-    mirrorPinchVis.mesh.position.set(ox, oy, 2 * mirrorZ - oz);
-    mirrorPinchVis.mesh.visible = true;
+  if (isPinching && !wasPinching) {
+    const mx = (_indexPos.x + _thumbPos.x) * 0.5;
+    const my = (_indexPos.y + _thumbPos.y) * 0.5;
+    const mz = (_indexPos.z + _thumbPos.z) * 0.5;
+    pinchObj.position.set(mx, my, mz);
+    if (bellBuffer) {
+      if (pinchAudio.isPlaying) pinchAudio.stop();
+      pinchAudio.setBuffer(bellBuffer);
+      pinchAudio.play();
+    }
+    emitParticles(mx, my, mz);
   }
 
   return isPinching;
@@ -1513,9 +1599,10 @@ btnStart.onclick = async () => {
     updateHandVis(hand1, mirrorVis1, true);
     updateHandVis(hand2, mirrorVis2, true);
 
-    // ── 핀치 구체 (실제 + 거울) ───────────────────────────────
-    wasPinching1 = updatePinchSphere(hand1, pinch1, mirrorPinch1, pinchAudio1, wasPinching1);
-    wasPinching2 = updatePinchSphere(hand2, pinch2, mirrorPinch2, pinchAudio2, wasPinching2);
+    // ── 핀치 파티클 ────────────────────────────────────────────
+    wasPinching1 = updatePinch(hand1, pinchObj1, pinchAudio1, wasPinching1);
+    wasPinching2 = updatePinch(hand2, pinchObj2, pinchAudio2, wasPinching2);
+    updateParticles(dt);
 
     // ── 포인터 빛점 + 궤적 (실제 + 거울) ────────────────────
     const isPointing1 = updatePointerDot(hand1, ptrDot1, mirrorPtrDot1);
