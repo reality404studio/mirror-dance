@@ -120,11 +120,11 @@ const FISH_CALL_DIST = 0.50;   // CALL 상태: 사용자 앞 거리 (m)
 const FISH_ORBIT_R   = 0.40;   // SING 상태: 선회 반지름 (m)
 
 // ── 파티클 스파클 ─────────────────────────────────────────────
-const PART_PER_PINCH = 14;     // 핀치 1회당 파티클 수
-const PART_MAX       = 300;    // 최대 파티클 수
-const PART_GRAVITY   = -3.5;   // m/s²
+const PART_PER_PINCH = 12;     // 핀치 1회당 파티클 수
+const PART_MAX       = 400;    // 최대 파티클 수
+const PART_GRAVITY   = -1.0;   // m/s² — 약한 중력 (천천히 떨어짐)
 const PART_FLOOR_Y   = 0.015;  // 바닥 높이 (m)
-const PART_REST_TIME = 90;     // 바닥 유지 시간 (초)
+const PART_REST_TIME = 60;     // 바닥 유지 시간 (초)
 
 // WebXR hand joint names (spec order, 25 joints)
 const HAND_JOINTS = [
@@ -296,7 +296,7 @@ const _partMat = new THREE.ShaderMaterial({
     void main() {
       vAlpha = pAlpha;
       vec4 mv = modelViewMatrix * vec4(position, 1.0);
-      gl_PointSize = pSize * (180.0 / -mv.z);
+      gl_PointSize = pSize * (400.0 / -mv.z);
       gl_Position  = projectionMatrix * mv;
     }
   `,
@@ -1154,26 +1154,33 @@ const _thumbPos = new THREE.Vector3();
 // ── 파티클 방출 ───────────────────────────────────────────────
 function emitParticles(x, y, z) {
   for (let i = 0; i < PART_PER_PINCH; i++) {
-    if (particles.length >= PART_MAX) break;
-    const angle = Math.random() * Math.PI * 2;
-    const horiz = 0.25 + Math.random() * 0.55;
-    const up    = 0.35 + Math.random() * 0.80;
+    if (particles.length >= PART_MAX) {
+      // 꽉 찼으면 가장 오래된 바닥 파티클 제거해서 자리 확보 → 무한 생성 가능
+      const oldIdx = particles.findIndex(p => p.state === 'resting');
+      if (oldIdx !== -1) particles.splice(oldIdx, 1);
+      else break; // 비행 중인 것만 있으면 포기
+    }
+    const angle  = Math.random() * Math.PI * 2;
+    const horiz  = 0.01 + Math.random() * 0.07;  // 매우 약한 수평 퍼짐
+    // 손끝에서 부스러지는 느낌: 대부분 아래로, 일부만 살짝 위로
+    const vy     = (Math.random() < 0.25 ? 1 : -1) * Math.random() * 0.08 - 0.04;
     particles.push({
       x, y, z,
       vx: Math.cos(angle) * horiz,
-      vy: up,
+      vy,
       vz: Math.sin(angle) * horiz,
       state: 'flying', age: 0, flyTime: 0,
-      size: 0.016 + Math.random() * 0.022
+      size: 0.05 + Math.random() * 0.05   // 5~10cm 지름
     });
   }
 }
 
 // ── 파티클 갱신 ───────────────────────────────────────────────
 function updateParticles(dt) {
+  // 만료 파티클 제거 (비행 30초 초과 또는 바닥 PART_REST_TIME 초 초과)
   particles = particles.filter(p =>
     p.state === 'flying'
-      ? p.age < 20
+      ? p.age < 30
       : (p.age - p.flyTime) < PART_REST_TIME
   );
 
@@ -1194,20 +1201,20 @@ function updateParticles(dt) {
       }
     }
 
-    // 알파: 비행 중 밝음, 바닥에선 마지막 10초만 페이드
+    // 알파: 비행 중 밝음 → 바닥에서 마지막 20초 동안 자연스럽게 페이드
     let alpha;
     if (p.state === 'flying') {
-      alpha = 1.0;
+      alpha = 0.95;
     } else {
       const restAge   = p.age - p.flyTime;
-      const fadeStart = Math.max(0, PART_REST_TIME - 10);
+      const fadeStart = Math.max(0, PART_REST_TIME - 20);
       alpha = restAge < fadeStart
-        ? 0.80
-        : (1.0 - (restAge - fadeStart) / 10) * 0.80;
+        ? 0.75
+        : (1.0 - (restAge - fadeStart) / 20) * 0.75;
     }
 
     const b = i * 3;
-    _pPos[b]  = p.x; _pPos[b+1]  = p.y; _pPos[b+2]  = p.z;
+    _pPos[b]  = p.x; _pPos[b+1] = p.y; _pPos[b+2] = p.z;
     _pAlp[i]  = Math.max(0, alpha);
     _pSz[i]   = p.size;
 
@@ -1219,11 +1226,12 @@ function updateParticles(dt) {
   _partGeo.setDrawRange(0, count);
   _partGeoM.setDrawRange(0, spawnPos ? count : 0);
   if (count > 0) {
-    _partGeo.attributes.position.needsUpdate = true;
-    _partGeo.attributes.pAlpha.needsUpdate   = true;
-    _partGeo.attributes.pSize.needsUpdate    = true;
+    _partGeo.attributes.position.needsUpdate  = true;
+    _partGeo.attributes.pAlpha.needsUpdate    = true;
+    _partGeo.attributes.pSize.needsUpdate     = true;
     _partGeoM.attributes.position.needsUpdate = true;
-    // pAlpha / pSize shared → one update covers both
+    _partGeoM.attributes.pAlpha.needsUpdate   = true;  // 비행 중 거울 반영 누락 수정
+    _partGeoM.attributes.pSize.needsUpdate    = true;  // 비행 중 거울 반영 누락 수정
   }
   partMesh.visible  = count > 0;
   partMeshM.visible = count > 0 && !!spawnPos;
