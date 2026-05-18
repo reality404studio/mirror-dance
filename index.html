@@ -27,8 +27,6 @@
   }
   #btnStart  { background: #4caf50; color: white; }
   #btnStart.ending { background: #f44336; }
-  #btnToggle { background: #2196f3; color: white; display: none; }
-  #btnToggle.off { background: #ff9800; }
   #btnSummon { background: #7b1fa2; color: white; display: none; }
   #btnSummon.active { background: #e91e63; }
   #btnFish { background: #ff7043; color: white; display: none; }
@@ -61,7 +59,6 @@
 
 <div id="ui">
   <button id="btnStart">AR 시작</button>
-  <button id="btnToggle">시나리오 전환</button>
   <button id="btnSummon">구체 소환</button>
   <button id="btnFish">물고기 소환</button>
 </div>
@@ -81,13 +78,16 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 // ────────────────────────────────────────────────────────────────
 //  CONSTANTS
 // ────────────────────────────────────────────────────────────────
 const MIRROR_DIST  = 1.5;
-const CUBE_SIZE    = 0.20;
-const HEAD_ABOVE   = 0.30;
+
+// ── 비쥬얼 문법 토큰 (snapshots/VISUAL_GRAMMAR.md) ────────────
+const LAGOON  = new THREE.Color(0x00B4D8);
+const SHALLOW = new THREE.Color(0x90E0EF);
 
 const SPHERE_RADIUS      = 0.12;
 const SPHERE_MOVE_SPEED  = 0.35;
@@ -129,47 +129,6 @@ const PART_GRAVITY   = -1.0;   // m/s² — 약한 중력 (천천히 떨어짐)
 const PART_FLOOR_Y   = 0.015;  // 바닥 높이 (m)
 const PART_REST_TIME = 60;     // 바닥 유지 시간 (초)
 
-// WebXR hand joint names (spec order, 25 joints)
-const HAND_JOINTS = [
-  'wrist',
-  'thumb-metacarpal', 'thumb-phalanx-proximal', 'thumb-phalanx-distal', 'thumb-tip',
-  'index-finger-metacarpal', 'index-finger-phalanx-proximal', 'index-finger-phalanx-intermediate', 'index-finger-phalanx-distal', 'index-finger-tip',
-  'middle-finger-metacarpal', 'middle-finger-phalanx-proximal', 'middle-finger-phalanx-intermediate', 'middle-finger-phalanx-distal', 'middle-finger-tip',
-  'ring-finger-metacarpal', 'ring-finger-phalanx-proximal', 'ring-finger-phalanx-intermediate', 'ring-finger-phalanx-distal', 'ring-finger-tip',
-  'pinky-finger-metacarpal', 'pinky-finger-phalanx-proximal', 'pinky-finger-phalanx-intermediate', 'pinky-finger-phalanx-distal', 'pinky-finger-tip'
-];
-
-// Bone connections for skeleton lines
-const HAND_CONNECTIONS = [
-  ['wrist', 'thumb-metacarpal'],
-  ['wrist', 'index-finger-metacarpal'],
-  ['wrist', 'middle-finger-metacarpal'],
-  ['wrist', 'ring-finger-metacarpal'],
-  ['wrist', 'pinky-finger-metacarpal'],
-  ['index-finger-metacarpal', 'middle-finger-metacarpal'],
-  ['middle-finger-metacarpal', 'ring-finger-metacarpal'],
-  ['ring-finger-metacarpal', 'pinky-finger-metacarpal'],
-  ['thumb-metacarpal', 'thumb-phalanx-proximal'],
-  ['thumb-phalanx-proximal', 'thumb-phalanx-distal'],
-  ['thumb-phalanx-distal', 'thumb-tip'],
-  ['index-finger-metacarpal', 'index-finger-phalanx-proximal'],
-  ['index-finger-phalanx-proximal', 'index-finger-phalanx-intermediate'],
-  ['index-finger-phalanx-intermediate', 'index-finger-phalanx-distal'],
-  ['index-finger-phalanx-distal', 'index-finger-tip'],
-  ['middle-finger-metacarpal', 'middle-finger-phalanx-proximal'],
-  ['middle-finger-phalanx-proximal', 'middle-finger-phalanx-intermediate'],
-  ['middle-finger-phalanx-intermediate', 'middle-finger-phalanx-distal'],
-  ['middle-finger-phalanx-distal', 'middle-finger-tip'],
-  ['ring-finger-metacarpal', 'ring-finger-phalanx-proximal'],
-  ['ring-finger-phalanx-proximal', 'ring-finger-phalanx-intermediate'],
-  ['ring-finger-phalanx-intermediate', 'ring-finger-phalanx-distal'],
-  ['ring-finger-phalanx-distal', 'ring-finger-tip'],
-  ['pinky-finger-metacarpal', 'pinky-finger-phalanx-proximal'],
-  ['pinky-finger-phalanx-proximal', 'pinky-finger-phalanx-intermediate'],
-  ['pinky-finger-phalanx-intermediate', 'pinky-finger-phalanx-distal'],
-  ['pinky-finger-phalanx-distal', 'pinky-finger-tip'],
-];
-
 // ────────────────────────────────────────────────────────────────
 //  THREE.JS SCENE
 // ────────────────────────────────────────────────────────────────
@@ -190,20 +149,10 @@ const dl = new THREE.DirectionalLight(0xffffff, 2.0);
 dl.position.set(1, 3, 1);
 scene.add(dl);
 
-// ── 빨간 큐브 ──────────────────────────────────────────────────
-const cubeGeo = new THREE.BoxGeometry(CUBE_SIZE, CUBE_SIZE, CUBE_SIZE);
-
-const realCube = new THREE.Mesh(
-  cubeGeo,
-  new THREE.MeshStandardMaterial({ color: 0xff1a1a, roughness: 0.25, metalness: 0.15 })
-);
-scene.add(realCube);
-
-const mirrorCube = new THREE.Mesh(
-  cubeGeo,
-  new THREE.MeshStandardMaterial({ color: 0xff7777, roughness: 0.25, metalness: 0.15 })
-);
-scene.add(mirrorCube);
+// PMREM 환경맵 — Fish iridescence/clearcoat 반사용 (텍스처 에셋 불필요)
+const _pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = _pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+_pmrem.dispose();
 
 // ── 바닥 가이드 (1.5m 기준선) ──────────────────────────────────
 const guideGroup = new THREE.Group();
@@ -350,27 +299,52 @@ function setFishOpacity(mats, opacity) {
   });
 }
 
+// M4 Fish Spirit 재료 (VISUAL_GRAMMAR.md): GLB 텍스처 위에 청록 정령 광택을 덧입힘
+function upgradeFishMaterial(source) {
+  const mat = new THREE.MeshPhysicalMaterial();
+
+  // 소스(GLB) PBR 속성 승계
+  if (source) {
+    if (source.color)        mat.color.copy(source.color);
+    if (source.map)          mat.map          = source.map;
+    if (source.normalMap)    mat.normalMap    = source.normalMap;
+    if (source.roughnessMap) mat.roughnessMap = source.roughnessMap;
+    if (source.metalnessMap) mat.metalnessMap = source.metalnessMap;
+    if (source.aoMap)        mat.aoMap        = source.aoMap;
+    if (typeof source.roughness === 'number') mat.roughness = source.roughness;
+    if (typeof source.metalness === 'number') mat.metalness = source.metalness;
+  }
+
+  // 정령 광택
+  mat.clearcoat          = 0.6;
+  mat.clearcoatRoughness = 0.2;
+  mat.iridescence        = 0.35;
+  mat.iridescenceIOR     = 1.3;
+  mat.envMapIntensity    = 1.2;
+  mat.emissive           = LAGOON.clone().multiplyScalar(0.15);
+  mat.emissiveIntensity  = 1.0;  // updateFish 에서 호흡/리빌 펄스로 변조
+
+  mat.side       = THREE.DoubleSide;
+  mat.transparent = true;
+  mat.opacity     = 1;
+  mat.depthWrite  = true;
+
+  return mat;
+}
+
 function assignFishMaterials(root, mats, isMirror) {
   root.traverse(obj => {
     if (!obj.isMesh) return;
-
     obj.frustumCulled = false;
 
     const sourceMats = Array.isArray(obj.material) ? obj.material : [obj.material];
-    const clonedMats = sourceMats.map(source => {
-      const mat = source?.clone
-        ? source.clone()
-        : new THREE.MeshStandardMaterial({ color: 0xffffff });
-
-      mat.side = THREE.DoubleSide;
-      mat.transparent = true;
-      mat.opacity = isMirror ? 0.72 : 1;
-      mat.depthWrite = !isMirror;
+    const upgradedMats = sourceMats.map(source => {
+      const mat = upgradeFishMaterial(source);
       mats.push(mat);
       return mat;
     });
 
-    obj.material = Array.isArray(obj.material) ? clonedMats : clonedMats[0];
+    obj.material = Array.isArray(obj.material) ? upgradedMats : upgradedMats[0];
   });
 }
 
@@ -414,7 +388,7 @@ new GLTFLoader().load(
     playFishAnimations(realModel, gltf.animations);
     playFishAnimations(mirrorModel, gltf.animations);
     setFishOpacity(fishRealMats, 1);
-    setFishOpacity(fishMirrorMats, 0.72);
+    setFishOpacity(fishMirrorMats, 1);
   },
   undefined,
   err => {
@@ -431,59 +405,6 @@ scene.add(hand1);
 
 const hand2 = renderer.xr.getHand(1);
 scene.add(hand2);
-
-// ────────────────────────────────────────────────────────────────
-//  손 시각화 팩토리 — 조인트 구체 + 본 라인
-//  realHand: 흰색/크림, mirrorHand: 파란색
-// ────────────────────────────────────────────────────────────────
-function createHandVis(jointColor, lineColor, emissiveColor) {
-  const group = new THREE.Group();
-
-  const jointMat = new THREE.MeshStandardMaterial({
-    color: jointColor,
-    transparent: true,
-    opacity: 0.85,
-    roughness: 0.2,
-    metalness: 0.5,
-    emissive: new THREE.Color(emissiveColor),
-    emissiveIntensity: 0.35
-  });
-  const jointGeo = new THREE.SphereGeometry(0.008, 8, 8);
-  const joints = {};
-
-  HAND_JOINTS.forEach(name => {
-    const mesh = new THREE.Mesh(jointGeo, jointMat);
-    mesh.visible = false;
-    group.add(mesh);
-    joints[name] = mesh;
-  });
-
-  // 본 라인 세그먼트
-  const linePositions = new Float32Array(HAND_CONNECTIONS.length * 6);
-  const lineGeo = new THREE.BufferGeometry();
-  lineGeo.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
-  const lineMat = new THREE.LineBasicMaterial({
-    color: lineColor, transparent: true, opacity: 0.6
-  });
-  const lines = new THREE.LineSegments(lineGeo, lineMat);
-  lines.visible = false;
-  lines.frustumCulled = false;
-  group.add(lines);
-
-  return { group, joints, lines, lineGeo, linePositions };
-}
-
-// 실제 손 — 흰색/크림
-const realVis1 = createHandVis(0xffe8d6, 0xffccaa, 0xffaa66);
-const realVis2 = createHandVis(0xffe8d6, 0xffccaa, 0xffaa66);
-scene.add(realVis1.group);
-scene.add(realVis2.group);
-
-// 거울 손 — 파란색
-const mirrorVis1 = createHandVis(0x88ccff, 0x55aaff, 0x2255ff);
-const mirrorVis2 = createHandVis(0x88ccff, 0x55aaff, 0x2255ff);
-scene.add(mirrorVis1.group);
-scene.add(mirrorVis2.group);
 
 // ────────────────────────────────────────────────────────────────
 //  핀치 — 파티클 스파클 (구체 대체)
@@ -732,7 +653,6 @@ const _tipToPanel  = new THREE.Vector3();
 let spawnPos       = null;
 let spawnEyeY      = 1.5;
 let mirrorZ        = 0;
-let scenario       = 1;
 let currentSession = null;
 
 let spherePhase     = 'idle';
@@ -759,6 +679,9 @@ let fishPhaseZ         = 0;
 let fishDriftEntryX    = 0;  // crossing 종료 시점의 위치 (drift 시작점)
 let fishDriftEntryY    = 0;
 let fishDriftEntryZ    = 0;
+
+// 거울 통과 reveal 펄스 (emissive 증폭, 디즈니 reveal moment)
+let fishRevealPulseTimer = -1;
 
 // 자율 유영 웨이포인트
 let fishWptX = 0, fishWptY = 0, fishWptZ = 0;
@@ -886,7 +809,7 @@ function spawnFish() {
   fishPhaseY         = Math.random() * Math.PI * 2;
   fishPhaseZ         = Math.random() * Math.PI * 2;
   setFishOpacity(fishRealMats, 1);
-  setFishOpacity(fishMirrorMats, 0.72);
+  setFishOpacity(fishMirrorMats, 1);
   fishMirrorMesh.visible = false;
   fishVel.set(0, 0, 0);
   fishAnimationMixers.forEach(mixer => mixer.setTime(0));
@@ -945,6 +868,7 @@ function updateFish(timestamp, userZ, dt) {
       fishDriftEntryY = fishY + Math.sin(timestamp * 0.003) * 0.018;
       fishDriftEntryZ = fishZ;
       setFishOpacity(fishRealMats, 1);
+      fishRevealPulseTimer = 0;       // 거울 통과 reveal 펄스 시작
     }
     return;
   }
@@ -1030,6 +954,20 @@ function updateFish(timestamp, userZ, dt) {
       -fishReal.rotation.z
     );
     fishMirrorMesh.visible = true;
+
+    // ── M4 호흡 + 거울 통과 reveal 펄스 (emissive 변조) ──────
+    let revealPulse = 0;
+    if (fishRevealPulseTimer >= 0) {
+      fishRevealPulseTimer += dt;
+      if (fishRevealPulseTimer < 0.8) {
+        revealPulse = (1 - fishRevealPulseTimer / 0.8) * 1.5;
+      } else {
+        fishRevealPulseTimer = -1;
+      }
+    }
+    const breath = 1.0 + Math.sin(timestamp * 0.0018) * 0.5 + revealPulse;
+    fishRealMats.forEach(m   => { m.emissiveIntensity = breath; });
+    fishMirrorMats.forEach(m => { m.emissiveIntensity = breath; });
   }
 }
 
@@ -1172,49 +1110,8 @@ function updateSphere(timestamp, userZ) {
   }
 }
 
-// ────────────────────────────────────────────────────────────────
-//  손 시각화 업데이트 — invertZ=true 이면 거울 손
-// ────────────────────────────────────────────────────────────────
+// _tmpPos: 손목 패널 등에서 공유하는 임시 Vector3
 const _tmpPos = new THREE.Vector3();
-
-function updateHandVis(realHand, vis, invertZ) {
-  if (!spawnPos) {
-    HAND_JOINTS.forEach(n => { vis.joints[n].visible = false; });
-    vis.lines.visible = false;
-    return;
-  }
-
-  let anyJoint = false;
-
-  for (const name of HAND_JOINTS) {
-    const joint  = realHand.joints[name];
-    const sphere = vis.joints[name];
-    if (joint && joint.visible) {
-      joint.getWorldPosition(_tmpPos);
-      const z = invertZ ? 2 * mirrorZ - _tmpPos.z : _tmpPos.z;
-      sphere.position.set(_tmpPos.x, _tmpPos.y, z);
-      sphere.visible = true;
-      anyJoint = true;
-    } else {
-      sphere.visible = false;
-    }
-  }
-
-  const pos = vis.linePositions;
-  HAND_CONNECTIONS.forEach(([a, b], i) => {
-    const ma = vis.joints[a];
-    const mb = vis.joints[b];
-    const base = i * 6;
-    if (ma.visible && mb.visible) {
-      pos[base]     = ma.position.x; pos[base + 1] = ma.position.y; pos[base + 2] = ma.position.z;
-      pos[base + 3] = mb.position.x; pos[base + 4] = mb.position.y; pos[base + 5] = mb.position.z;
-    } else {
-      for (let k = 0; k < 6; k++) pos[base + k] = 0;
-    }
-  });
-  vis.lineGeo.attributes.position.needsUpdate = true;
-  vis.lines.visible = anyJoint;
-}
 
 // ────────────────────────────────────────────────────────────────
 //  핀치 감지 & 구체 업데이트
@@ -1487,24 +1384,10 @@ function updateWristPanel(wristHand, pointerHand, panel, mirrorPanel, timestamp)
 //  UI
 // ────────────────────────────────────────────────────────────────
 const statusEl  = document.getElementById('status');
-const toggleBtn = document.getElementById('btnToggle');
 const btnSummon = document.getElementById('btnSummon');
 const btnFish   = document.getElementById('btnFish');
 
 function setStatus(text) { statusEl.textContent = text; }
-
-toggleBtn.onclick = () => {
-  scenario = scenario === 1 ? 2 : 1;
-  if (scenario === 1) {
-    toggleBtn.textContent = '시나리오 전환';
-    toggleBtn.classList.remove('off');
-    setStatus('시나리오 1 — 현실 큐브 ON + 거울 큐브 | 전환 버튼으로 시나리오 2');
-  } else {
-    toggleBtn.textContent = '시나리오 1로 돌아가기';
-    toggleBtn.classList.add('off');
-    setStatus('시나리오 2 — 거울 큐브만 (현실에선 안 보임)');
-  }
-};
 
 btnSummon.onclick = () => {
   if (!spawnPos) return;
@@ -1543,7 +1426,6 @@ function enterSessionUI(session) {
   btnStart.textContent = 'AR 종료';
   btnStart.classList.add('ending');
   document.getElementById('hint').style.display = 'none';
-  toggleBtn.style.display = 'inline-block';
   btnSummon.style.display = 'inline-block';
   btnFish.style.display   = 'inline-block';
 }
@@ -1552,7 +1434,6 @@ function exitSessionUI() {
   currentSession = null;
   btnStart.textContent = 'AR 시작';
   btnStart.classList.remove('ending');
-  toggleBtn.style.display = 'none';
   btnSummon.style.display = 'none';
   btnSummon.textContent = '구체 소환';
   btnSummon.classList.remove('active');
@@ -1630,19 +1511,12 @@ btnStart.onclick = async () => {
       guideGroup.visible = true;
 
       setStatus(
-        `✓ 준비 완료 | 거울 위치(앞 ${MIRROR_DIST}m) | 손 들어보세요 — 거울에 비칩니다`
+        `✓ 준비 완료 | 거울 위치(앞 ${MIRROR_DIST}m) | 핀치 / 포인터 / 물고기 — 거울에 비칩니다`
       );
     }
 
     // ── 현재 헤드 위치 갱신 ───────────────────────────────────
     currentHeadX = h.x; currentHeadY = h.y; currentHeadZ = h.z;
-
-    // ── 큐브: 머리 위 30cm, 실시간 추적 ─────────────────────
-    const cx = h.x, cy = h.y + HEAD_ABOVE, cz = h.z;
-    realCube.position.set(cx, cy, cz);
-    realCube.visible = (scenario === 1);
-    mirrorCube.position.set(cx, cy, reflectZ(cz));
-    mirrorCube.visible = true;
 
     // ── 프레임 dt (루프 레벨 1회 계산) ───────────────────────────
     const dt = prevTimestamp > 0
@@ -1671,14 +1545,6 @@ btnStart.onclick = async () => {
     }
 
     prevTimestamp = timestamp;
-
-    // ── 실제 손 (패스스루 위 크림색) ─────────────────────────
-    updateHandVis(hand1, realVis1, false);
-    updateHandVis(hand2, realVis2, false);
-
-    // ── 거울 손 (Z 반전 파란색) ───────────────────────────────
-    updateHandVis(hand1, mirrorVis1, true);
-    updateHandVis(hand2, mirrorVis2, true);
 
     // ── 핀치 파티클 ────────────────────────────────────────────
     wasPinching1 = updatePinch(hand1, pinchObj1, pinchAudio1, wasPinching1);

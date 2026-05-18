@@ -1,7 +1,11 @@
 # MIRROR MR — 컴포넌트 명세서 v1
 **목적**: 비쥬얼 문법 적용 전 구조 감사(Audit)
 **기준**: 피그마 컴포넌트 분해 원칙 적용
-**코드 파일**: `index.html` (단일 파일, 수정 없음)
+**코드 파일**: `index.html` (단일 파일)
+
+> **2026-05-18 갱신**: 테스트 종료에 따라 C01 Cube, C05 HandSkeleton 삭제됨.
+> 시나리오 토글(`scenario`/`btnToggle`)도 C01 종속이라 함께 정리됨.
+> 물고기 거울 opacity 0.72 → 1.0 (물리 거울 원칙 적용).
 
 ---
 
@@ -117,40 +121,9 @@ currentHeadX/Y/Z          매 프레임 갱신되는 헤드 위치
 
 ---
 
-### C01 — ReferenceObject (Cube)
+### ~~C01 — ReferenceObject (Cube)~~ — 삭제됨 (2026-05-18)
 
-> **역할**: AR 씬의 기준 오브젝트. 거울 반사 테스트 레퍼런스.
-
-**Layer Structure**
-
-```
-Group (암묵적)
-├── realCube     Mesh  BoxGeometry(0.20³)  MeshStandard  #ff1a1a  [스켈레톤]
-└── mirrorCube   Mesh  BoxGeometry(0.20³)  MeshStandard  #ff7777  [스켈레톤]
-```
-*shared geometry — 같은 BoxGeometry 인스턴스 재사용*
-
-**Instance Props**
-
-| 속성 | realCube | mirrorCube |
-|---|---|---|
-| color | #ff1a1a | #ff7777 |
-| z position | headZ | reflectZ(headZ) |
-| visible | scenario===1 | always true |
-
-**Variants (Scenario)**
-
-```
-Scenario 1:  realCube VISIBLE   + mirrorCube VISIBLE
-Scenario 2:  realCube HIDDEN    + mirrorCube VISIBLE
-```
-
-**Logic** (매 프레임)
-- 위치: head(x, y+HEAD_ABOVE, z) — 실시간 헤드 추종
-- 거울 위치: (x, y+HEAD_ABOVE, reflectZ(z))
-- scenario 변수에 따라 realCube.visible 토글
-
-**현재 스켈레톤 표식**: solid red/pink cube → 교체 예정
+테스트용 헤드 레퍼런스. 비쥬얼 문법 적용 단계에서 삭제. `scenario`/`btnToggle`도 함께 정리됨.
 
 ---
 
@@ -271,46 +244,11 @@ total: ~1.0s
 
 ---
 
-### C05 — HandSkeleton
+### ~~C05 — HandSkeleton~~ — 삭제됨 (2026-05-18)
 
-> **역할**: WebXR 손 관절 시각화. Real + Mirror 각 2개 = 총 4 인스턴스.
-
-**Layer Structure (per instance)**
-
-```
-group  Group
-├── joint[wrist]           Mesh  SphereGeometry(0.008, 8, 8)  MeshStandard
-├── joint[thumb-*]         Mesh  ×4
-├── joint[index-*]         Mesh  ×4
-├── joint[middle-*]        Mesh  ×4
-├── joint[ring-*]          Mesh  ×4
-├── joint[pinky-*]         Mesh  ×4
-└── lines  LineSegments    BufferGeometry  27 segments  LineBasicMaterial
-```
-*(25 joint meshes + 1 LineSegments = 26 objects per instance)*
-
-**Instances**
-
-| 인스턴스 | 색상 | invertZ | 소스 |
-|---|---|---|---|
-| realVis1 | cream | false | hand1 |
-| realVis2 | cream | false | hand2 |
-| mirrorVis1 | blue | true | hand1 |
-| mirrorVis2 | blue | true | hand2 |
-
-**Variants**
-
-```
-tracking      → joints & lines VISIBLE
-not tracking  → all HIDDEN
-```
-
-**Logic (updateHandVis)**
-- joint.getWorldPosition() → invertZ ? z = 2*mirrorZ - z : z 그대로
-- lines: 각 HAND_CONNECTIONS 쌍의 joint 위치로 BufferGeometry 갱신
-- spawnPos null이면 전체 hidden
-
-**현재 스켈레톤 표식**: sphere joints + line segments → 교체 예정 (손 메시 등)
+테스트용 관절 시각화. 사용자 손은 Quest 3 패스스루(실사)로만 보이도록 결정.
+인터랙션 레이어(C07 파티클·C08 포인터·C09 트레일·C10 손목패널)만 마법으로 덧칠.
+`HAND_JOINTS`, `HAND_CONNECTIONS`, `createHandVis()`, `updateHandVis()` 모두 정리됨.
 
 ---
 
@@ -557,6 +495,7 @@ position.z = reflectZ(fishZ)
 rotation.x =  fishReal.rotation.x
 rotation.y =  π - fishReal.rotation.y
 rotation.z = -fishReal.rotation.z
+opacity    = 1.0  (2026-05-18 갱신: 실제와 동일)
 ```
 
 **Waypoint 시스템**
@@ -646,17 +585,17 @@ maxDistance    = 4~6m
 
 | 컴포넌트 | 비쥬얼 (스켈레톤) | 로직 | 상태 | 비고 |
 |---|---|---|---|---|
-| C01 ReferenceObject | Mesh + Material | 헤드 추종 | scenario | 단순 |
-| C02 MirrorGuide | Mesh + Material | 위치 1회 고정 | visible | 단순 |
+| ~~C01 ReferenceObject~~ | — | — | — | 삭제됨 |
+| C02 MirrorGuide | Mesh + Material | 위치 1회 고정 | visible | 테스트 중 유지 |
 | C03 MirrorCrossingSphere | 2× Mesh + Material + clipping | 이동/정지/소멸 | phase(4단계) | 클리핑 로직 내장 |
 | C04 MirrorCrossingEffect | 3×Mesh + PointLight | 타이머 기반 애니메이션 | timer | VFX 전용 |
-| C05 HandSkeleton | 25×Mesh + LineSegments | 관절 위치 매핑 | tracking y/n | 팩토리 함수 |
+| ~~C05 HandSkeleton~~ | — | — | — | 삭제됨 |
 | C06 PinchGesture | 없음 | 거리 감지 + rising edge | wasPinching | 위임자 |
 | C07 SparkleParticle | GPU Points + shader | 물리 + 수명 관리 | flying/resting | shader 내 색상 |
 | C08 PointerDot | core + halo Mesh | lerp 추종 + 감지 | pointing y/n | 감지·시각 혼재 |
 | C09 HandTrail | GPU Points + shader | 점 누적 + 수명 | - | shader 내 감쇠 |
 | C10 WristPanel | Plane Mesh | 위치·터치 감지 | normal/pressed | 위치·감지 혼재 |
-| C11 Fish | GLB ×2 | 상태머신+물리+회전 | idle/approach/crossing/drift | 가장 복잡 |
+| C11 Fish | GLB ×2 (skeleton clone + animations) | 상태머신+물리+회전 | idle/approach/crossing/drift | 가장 복잡 |
 | C12 VoiceAnalyzer | 없음 | RMS + 히스테리시스 | 4단계 | 순수 로직 |
 | C13 SpatialAudio | 없음 | 재생 제어 | playing y/n | 순수 로직 |
 
